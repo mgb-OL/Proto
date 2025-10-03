@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+message HeartRate {
+  uint32 value = 1;
+}
+message OxigenSaturation {
+  uint32 value = 1;
+}
+message ArterialBloodPressure {
+  uint32 systolic = 1;
+
+  uint32 diastolic = 2;
+}
+message SkinTemperature {
+  float value = 1;
+}
+
+message BatteryLevel {
+  uint32 value = 1;
+}
+
+message StepsCounter {
+  uint32 epochInit = 1;
+  uint32 steps = 2;
+}
