@@ -18,7 +18,7 @@ from Crypto.Util.Padding import pad, unpad
 os.environ.setdefault("PROTO_ENCRYPTION_KEY", "2fb8344d08a5f00923c365e542be49d6")
 
 
-def round_to_multiple_of_16(value) -> int:
+def round_to_multiple_of_16(value: int) -> int:
     """
     Round a value to the nearest multiple of 16.
     
@@ -49,7 +49,6 @@ def _load_encryption_key() -> bytes:
     if raw_key:
         # Get bytes 
         candidate = raw_key.encode("utf-8")
-        
         # Check length
         if len(candidate) in {16, 24, 32}:
             # Valid key length
@@ -72,6 +71,8 @@ def _load_encryption_key() -> bytes:
         # If not found or error reading, ignore
         except OSError:
             pass
+
+
 
 
 # LOAD THE ENCRYPTION KEY
@@ -138,7 +139,7 @@ def create_waveform_data() -> dict:
     }
 
 
-def serialize_data(data) -> dict:
+def serialize_data(data: dict) -> tuple[int, dict]:
     """
     Serialize protobuf data to bytes.
     
@@ -146,23 +147,34 @@ def serialize_data(data) -> dict:
         data (dict): Dictionary of protobuf messages to serialize.
     
     Returns:
-        dict: Dictionary with serialized byte strings.
+        tuple: (original payload length, serialized data dictionary)
     """
     # Local dictionary to hold serialized data
     serialized = {}
-    
+    proto_data_length = 0
+
     # Serialize each protobuf message to bytes
     for key, message in data.items():
         # Serialize the message
         serialized[key] = message.SerializeToString()
-        # Print size of serialized message
-        print(f"{key}: {len(serialized[key])} bytes")
+        # Get the original length
+        proto_data_length = len(serialized[key])
+        # Print size of original serialized message
+        print(f"{key}: {proto_data_length} bytes")
+        # If size is not a multiple of 16
+        if proto_data_length < round_to_multiple_of_16(proto_data_length):
+            # Pad the serialized data
+            serialized[key] = serialized[key].ljust(round_to_multiple_of_16(proto_data_length), b'\0')
+            # Print padding information
+            print(f"Padding {key} to {len(serialized[key])} bytes")
+        else:
+            pass
         
     # Return the serialized data dictionary
-    return serialized
+    return proto_data_length, serialized
 
 
-def _pack_serialized_data(serialized_data) -> bytes:
+def _pack_serialized_data(serialized_data: dict) -> bytes:
     """
     Pack serialized protobuf messages into a single byte payload.
     
@@ -194,10 +206,10 @@ def _pack_serialized_data(serialized_data) -> bytes:
         # Check blob length
         if len(blob) > 0xFFFF:
             raise ValueError("Serialized proto message exceeds 65535 bytes; cannot pack length into 2 bytes")
-        
+
         # Append data length (2 bytes)
         payload.extend(struct.pack("<H", len(blob)))
-        
+
         # Append data bytes
         payload.extend(blob)
         
@@ -205,12 +217,13 @@ def _pack_serialized_data(serialized_data) -> bytes:
     return bytes(payload)
 
 
-def _unpack_serialized_data(payload) -> dict:
+def _unpack_serialized_data(payload: bytes, proto_data_length: int) -> dict:
     """
     Unpack a payload into the serialized protobuf message dictionary.
     
     Arguments:
         payload (bytes): The packed byte payload.
+        proto_data_length (int): The expected length of the original unencrypted payload.
         
     Returns:
         dict: Dictionary of serialized protobuf messages.
@@ -223,7 +236,7 @@ def _unpack_serialized_data(payload) -> dict:
     total_length = len(payload)
     
     # Unpack until we reach the end of the payload
-    while offset < total_length:
+    while offset < total_length - proto_data_length + 1:
         # Read key length
         if offset + 1 > total_length:
             # Not enough bytes for key length
@@ -247,7 +260,8 @@ def _unpack_serialized_data(payload) -> dict:
             # Not enough bytes for data length
             raise ValueError("Corrupted payload: missing data length header")
         # Read data length
-        data_length = struct.unpack_from("<H", payload, offset)[0]
+        data_length = proto_data_length
+        #data_length = struct.unpack_from("<H", payload, offset)[0]
         # Move offset forward
         offset += 2
 
@@ -264,7 +278,7 @@ def _unpack_serialized_data(payload) -> dict:
     return serialized_data
 
 
-def encrypt_serialized_data(serialized_data) -> tuple[int, bytes, bytes]:
+def encrypt_serialized_data(serialized_data: dict) -> tuple[bytes, bytes]:
     """
     Encrypt serialized protobuf messages using AES-CBC with PKCS#7 padding.
     
@@ -272,7 +286,7 @@ def encrypt_serialized_data(serialized_data) -> tuple[int, bytes, bytes]:
         serialized_data (dict): Dictionary of serialized protobuf messages.
     
     Returns:
-        tuple: (original payload length, IV bytes, ciphertext bytes)
+        tuple: (IV bytes, ciphertext bytes)
     """
     # Pack the serialized data into a single payload
     payload = _pack_serialized_data(serialized_data)
@@ -286,10 +300,10 @@ def encrypt_serialized_data(serialized_data) -> tuple[int, bytes, bytes]:
     ciphertext = cipher.encrypt(pad(payload, AES.block_size))
     
     # Return original payload length, IV, and ciphertext
-    return len(payload), iv, ciphertext
+    return iv, ciphertext
 
 
-def decrypt_serialized_data(iv, ciphertext) -> dict:
+def decrypt_serialized_data(iv: bytes, proto_data_length: int, ciphertext: bytes) -> dict:
     """
     Decrypt AES-CBC payload back into serialized protobuf messages.
     
@@ -307,15 +321,17 @@ def decrypt_serialized_data(iv, ciphertext) -> dict:
     payload = unpad(cipher.decrypt(ciphertext), AES.block_size)
     
     # Unpack the payload back into serialized data dictionary
-    return _unpack_serialized_data(payload)
+    return _unpack_serialized_data(payload, proto_data_length)
 
 
 
-def deserialize_data(serialized_data) -> dict:
+def deserialize_data(serialized_data: dict) -> dict:
     """
     Deserialize bytes back to protobuf messages.
+    
     Arguments:
         serialized_data (dict): Dictionary of serialized protobuf messages.
+    
     Returns:
         dict: Dictionary of deserialized protobuf messages.
     """
@@ -335,7 +351,7 @@ def deserialize_data(serialized_data) -> dict:
     return instances
 
 
-def print_waveform_data(data) -> None:
+def print_waveform_data(data: dict) -> None:
     """
     Print waveform data in a readable format.
     
@@ -359,18 +375,19 @@ def print_waveform_data(data) -> None:
         print(f"IMU Acceleration samples: {len(wf.imu.acc)}")
         if len(wf.imu.acc) > 0:
             print(f"  First acceleration norm: {wf.imu.acc[0].norm}")
-        print(f"Embedded Heart Rate: {wf.heartRate.value} bpm")
-        print(f"Embedded Oxygen Saturation: {wf.oxigenSaturation.value}%")
-        print(f"Embedded Blood Pressure: {wf.arterialBloodPressure.systolic}/{wf.arterialBloodPressure.diastolic} mmHg")
-        print(f"Embedded Skin Temperature: {wf.skinTemperature.value}°C")
+        print(f"Heart Rate: {wf.heartRate.value} bpm")
+        print(f"Oxygen Saturation: {wf.oxigenSaturation.value} %")
+        print(f"Blood Pressure: {wf.arterialBloodPressure.systolic}/{wf.arterialBloodPressure.diastolic} mmHg")
+        print(f"Skin Temperature: {wf.skinTemperature.value} °C")
     
 
-def save_to_file(serialized_data, filename) -> None:
+def save_to_file(serialized_data: dict, proto_data_length: int, filename: str) -> None:
     """
     Encrypt and save serialized data to a binary file.
     
     Arguments:
         serialized_data (dict): Dictionary of serialized protobuf messages.
+        proto_data_length (int): The expected length of the original unencrypted payload.
         filename (str): The path to the output binary file.
         
     Returns:
@@ -381,7 +398,7 @@ def save_to_file(serialized_data, filename) -> None:
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     
     # Encrypt the serialized data
-    proto_data_length, iv, ciphertext = encrypt_serialized_data(serialized_data)
+    iv, ciphertext = encrypt_serialized_data(serialized_data)
     
     # Write to file
     with open(filename, 'wb') as f:
@@ -399,7 +416,7 @@ def save_to_file(serialized_data, filename) -> None:
         f.write(ciphertext)
 
 
-def load_from_file(filename) -> dict:
+def load_from_file(filename: str) -> tuple[int, bytes, bytes]:
     """
     Load and decrypt serialized data from a binary file.
     
@@ -407,7 +424,7 @@ def load_from_file(filename) -> dict:
         filename (str): The path to the input binary file.
         
     Returns:
-        dict: Dictionary of deserialized protobuf messages.
+        tuple: (original payload length, IV bytes, ciphertext bytes)
     """
     
     # Read from file
@@ -437,7 +454,7 @@ def load_from_file(filename) -> dict:
             raise ValueError("Encrypted file has no ciphertext data")
         
     # Decrypt and unpack
-    return decrypt_serialized_data(iv, ciphertext)
+    return decrypt_serialized_data(iv, original_length, ciphertext)
 
 
 def main() -> None:
@@ -460,11 +477,11 @@ def main() -> None:
     
     # 2. Serialize to bytes
     print("\n2. Serializing waveform data...")
-    serialized = serialize_data(waveform_data)
+    proto_data_length, serialized = serialize_data(waveform_data)
     
     # 3. Save to file
     print("\n3. Encrypting and saving to file...")
-    save_to_file(serialized, "src/bin/ONAVITAL_raw_data.bin")
+    save_to_file(serialized, proto_data_length, "src/bin/ONAVITAL_raw_data.bin")
     print("Data saved to src/bin/ONAVITAL_raw_data.bin")
 
     # 4. Load from file
