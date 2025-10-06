@@ -161,14 +161,6 @@ def serialize_data(data: dict) -> tuple[int, dict]:
         proto_data_length = len(serialized[key])
         # Print size of original serialized message
         print(f"{key}: {proto_data_length} bytes")
-        # If size is not a multiple of 16
-        if proto_data_length < round_to_multiple_of_16(proto_data_length):
-            # Pad the serialized data
-            serialized[key] = serialized[key].ljust(round_to_multiple_of_16(proto_data_length), b'\0')
-            # Print padding information
-            print(f"Padding {key} to {len(serialized[key])} bytes")
-        else:
-            pass
         
     # Return the serialized data dictionary
     return proto_data_length, serialized
@@ -260,8 +252,8 @@ def _unpack_serialized_data(payload: bytes, proto_data_length: int) -> dict:
             # Not enough bytes for data length
             raise ValueError("Corrupted payload: missing data length header")
         # Read data length
-        data_length = proto_data_length
-        #data_length = struct.unpack_from("<H", payload, offset)[0]
+        #data_length = proto_data_length
+        data_length = struct.unpack_from("<H", payload, offset)[0]
         # Move offset forward
         offset += 2
 
@@ -296,9 +288,11 @@ def encrypt_serialized_data(serialized_data: dict) -> tuple[bytes, bytes]:
     iv = get_random_bytes(16)
     # Create AES cipher
     cipher = AES.new(ENCRYPTION_KEY_BYTES, AES.MODE_CBC, iv=iv)
-    # Pad and encrypt the payload
-    ciphertext = cipher.encrypt(pad(payload, AES.block_size))
-    
+    # Pad the payload
+    payload_padded = pad(payload, AES.block_size)
+    # Encrypt the payload
+    ciphertext = cipher.encrypt(payload_padded)
+
     # Return original payload length, IV, and ciphertext
     return iv, ciphertext
 
@@ -317,9 +311,12 @@ def decrypt_serialized_data(iv: bytes, proto_data_length: int, ciphertext: bytes
     # Decrypt the ciphertext using AES-CBC with PKCS#7 unpadding
     cipher = AES.new(ENCRYPTION_KEY_BYTES, AES.MODE_CBC, iv=iv)
     
-    # Decrypt and unpad the payload
-    payload = unpad(cipher.decrypt(ciphertext), AES.block_size)
+    # Decrypt the payload
+    payload = cipher.decrypt(ciphertext)
     
+    # Unpad the  payload
+    payload = unpad(payload, AES.block_size)
+
     # Unpack the payload back into serialized data dictionary
     return _unpack_serialized_data(payload, proto_data_length)
 
