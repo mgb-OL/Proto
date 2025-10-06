@@ -4,7 +4,6 @@ Example of how to read and use Protocol Buffer data.
 """
 
 # Import the generated protobuf classes
-# Note: The generated file has a space in the name, so we import it as a module
 import importlib.util
 import sys
 import os
@@ -15,196 +14,369 @@ from Crypto.Random import get_random_bytes
 from Crypto.Util.Padding import pad, unpad
 
 # Ensure demo encryption key is available via environment variable if none provided externally.
+# OEM key supplied by user (16-byte AES-128 key: 2fb8344d08a5f00923c365e542be49d6)
 os.environ.setdefault("PROTO_ENCRYPTION_KEY", "2fb8344d08a5f00923c365e542be49d6")
 
 
-def round_to_multiple_of_16(value):
-    """Round a value to the nearest multiple of 16."""
+def round_to_multiple_of_16(value) -> int:
+    """
+    Round a value to the nearest multiple of 16.
+    
+    Arguments:
+        value (int): The integer value to round.
+    
+    Returns:
+        int: The rounded value which is a multiple of 16.
+    """
+    # Round up to the next multiple of 16
     return ((value + 15) // 16) * 16
 
 
 def _load_encryption_key() -> bytes:
-    """Load AES key from env variables or fall back to OEM key."""
+    """
+    Load AES key from env variables or fall back to OEM key.
+    
+    Arguments:
+        None
+    
+    Returns:
+        bytes: The AES key (16, 24, or 32 bytes for AES-128/192/256).
+    """
+    # Try to load key directly from environment variable
     raw_key = os.environ.get("PROTO_ENCRYPTION_KEY")
+    
+    # If key provided directly, use it if valid length
     if raw_key:
+        # Get bytes 
         candidate = raw_key.encode("utf-8")
+        
+        # Check length
         if len(candidate) in {16, 24, 32}:
+            # Valid key length
             return candidate
 
+    
+    # Try to load key from file if specified
     key_file_path = os.environ.get("PROTO_ENCRYPTION_KEY_FILE")
+    
+    # If there is a file path, try to read it
     if key_file_path:
         try:
+            # Read file bytes
             file_bytes = Path(key_file_path).read_bytes()
+            # Check length
             if len(file_bytes) in {16, 24, 32}:
+                # Return valid key
                 return file_bytes
+            
+        # If not found or error reading, ignore
         except OSError:
             pass
 
-    # OEM key supplied by user (16-byte AES-128 key: 2fb8344d08a5f00923c365e542be49d6)
-    return bytes.fromhex("2fb8344d08a5f00923c365e542be49d6")
 
-
+# LOAD THE ENCRYPTION KEY
 ENCRYPTION_KEY_BYTES = _load_encryption_key()
 
-# Load the generated protobuf module
-spec = importlib.util.spec_from_file_location("alg 1_pb", os.path.join(os.path.dirname(__file__), "alg 1_pb.py"))
-health_pb2 = importlib.util.module_from_spec(spec)
-sys.modules["alg 1_pb"] = health_pb2
-spec.loader.exec_module(health_pb2)
 
 
-def create_health_data():
-    """Create example health data using protobuf messages."""
+# LOAD THE PROTOBUF MODULE
+
+# Dynamically load the raw_data protobuf module
+spec = importlib.util.spec_from_file_location("raw_data_pb2", os.path.join(os.path.dirname(__file__), "raw_data_pb2.py"))
+# Load the raw_data protobuf module
+raw_data_pb2 = importlib.util.module_from_spec(spec)
+# Register the module in sys.modules
+sys.modules["raw_data_pb2"] = raw_data_pb2
+# Execute the module
+spec.loader.exec_module(raw_data_pb2)
+
+
+def create_waveform_data() -> dict:
+    """
+    Create example waveform data using raw_data protobuf messages.
     
-    # Create heart rate data
-    heart_rate = health_pb2.HeartRate()
-    heart_rate.value = 72
+    Arguments:
+        None
     
-    # Create oxygen saturation data
-    oxygen_saturation = health_pb2.OxigenSaturation()
-    oxygen_saturation.value = 98
+    Returns:
+        dict: Dictionary with 'waveform' key containing the Waveform protobuf message.
+    """
     
-    # Create blood pressure data
-    blood_pressure = health_pb2.ArterialBloodPressure()
-    blood_pressure.systolic = 120
-    blood_pressure.diastolic = 80
+    # Create PPG object
+    ppg = raw_data_pb2.Ppg()
+    ppg.samplingRate = 100  # 100 Hz
     
-    # Create skin temperature data
-    skin_temp = health_pb2.SkinTemperature()
-    skin_temp.value = 36.5
+    # Add some sample PPG channels
+    for i in range(5):
+        sample = ppg.ppg_samples.add()
+        sample.red = 1000 + i * 10
+        sample.ir = 800 + i * 8
+        sample.green = 600 + i * 6
     
-    # Create battery level data
-    battery = health_pb2.BatteryLevel()
-    battery.value = 85
+    # Create IMU data
+    imu = raw_data_pb2.Imu()
+    imu.samplingRate = 50  # 50 Hz
     
-    # Create steps counter data
-    steps = health_pb2.StepsCounter()
-    steps.epochInit = 1696204800  # Unix timestamp
-    steps.steps = 8547
+    # Add some acceleration samples
+    for i in range(3):
+        acc = imu.acc.add()
+        acc.norm = 1.0 + i * 0.1
+    
+    # Create waveform object including everything
+    waveform = raw_data_pb2.Waveform()
+    waveform.epoch = 1696204800  
+    waveform.ppg.CopyFrom(ppg)
+    waveform.imu.CopyFrom(imu)
+    waveform.heartRate.value = 72
+    waveform.oxigenSaturation.value = 98
+    waveform.arterialBloodPressure.systolic = 120
+    waveform.arterialBloodPressure.diastolic = 80
+    waveform.skinTemperature.value = 36.5
     
     return {
-        'heart_rate': heart_rate,
-        'oxygen_saturation': oxygen_saturation,
-        'blood_pressure': blood_pressure,
-        'skin_temperature': skin_temp,
-        'battery': battery,
-        'steps': steps
+        'waveform': waveform
     }
 
 
-def serialize_data(data):
-    """Serialize protobuf data to bytes."""
+def serialize_data(data) -> dict:
+    """
+    Serialize protobuf data to bytes.
+    
+    Arguments:
+        data (dict): Dictionary of protobuf messages to serialize.
+    
+    Returns:
+        dict: Dictionary with serialized byte strings.
+    """
+    # Local dictionary to hold serialized data
     serialized = {}
+    
+    # Serialize each protobuf message to bytes
     for key, message in data.items():
+        # Serialize the message
         serialized[key] = message.SerializeToString()
+        # Print size of serialized message
         print(f"{key}: {len(serialized[key])} bytes")
+        
+    # Return the serialized data dictionary
     return serialized
 
 
-def _pack_serialized_data(serialized_data):
-    """Pack serialized protobuf messages into a single byte payload."""
+def _pack_serialized_data(serialized_data) -> bytes:
+    """
+    Pack serialized protobuf messages into a single byte payload.
+    
+    Arguments:
+        serialized_data (dict): Dictionary of serialized protobuf messages.
+    
+    Returns:
+        bytes: The packed byte payload.
+    """
+    # Local bytearray to hold the packed payload
     payload = bytearray()
+    
+    # Pack each entry as: [key length (1 byte)][key bytes][data length (2 bytes)][data bytes]
     for key, blob in serialized_data.items():
+        # Encode key to bytes
         key_bytes = key.encode("utf-8")
+        
+        # Validate lengths
         if len(key_bytes) > 255:
+            # Key too long for 1-byte length
             raise ValueError("Key length exceeds 255 bytes; cannot pack into unsigned int 8")
+        
+        # Append key length
         payload.extend(struct.pack("<B", len(key_bytes)))
+        
+        # Append key bytes
         payload.extend(key_bytes)
+        
+        # Check blob length
         if len(blob) > 0xFFFF:
             raise ValueError("Serialized proto message exceeds 65535 bytes; cannot pack length into 2 bytes")
+        
+        # Append data length (2 bytes)
         payload.extend(struct.pack("<H", len(blob)))
+        
+        # Append data bytes
         payload.extend(blob)
+        
+    # Return the packed payload as bytes
     return bytes(payload)
 
 
-def _unpack_serialized_data(payload):
-    """Unpack a payload into the serialized protobuf message dictionary."""
+def _unpack_serialized_data(payload) -> dict:
+    """
+    Unpack a payload into the serialized protobuf message dictionary.
+    
+    Arguments:
+        payload (bytes): The packed byte payload.
+        
+    Returns:
+        dict: Dictionary of serialized protobuf messages.
+    """
+    # Local dictionary to hold unpacked serialized data
     offset = 0
-    total_length = len(payload)
     serialized_data = {}
+    
+    # Length of the payload
+    total_length = len(payload)
+    
+    # Unpack until we reach the end of the payload
     while offset < total_length:
+        # Read key length
         if offset + 1 > total_length:
+            # Not enough bytes for key length
             raise ValueError("Corrupted payload: missing key length header")
+        # Read key length
         key_length = struct.unpack_from("<B", payload, offset)[0]
+        # Move offset forward
         offset += 1
 
+        # Read key bytes
         if offset + key_length > total_length:
+            # Not enough bytes for key bytes
             raise ValueError("Corrupted payload: incomplete key bytes")
+        # Read key bytes
         key = payload[offset:offset + key_length].decode("utf-8")
+        # Move offset forward
         offset += key_length
 
+        # Read data length
         if offset + 2 > total_length:
+            # Not enough bytes for data length
             raise ValueError("Corrupted payload: missing data length header")
+        # Read data length
         data_length = struct.unpack_from("<H", payload, offset)[0]
+        # Move offset forward
         offset += 2
 
+        # Read data bytes
         if offset + data_length > total_length:
+            # Not enough bytes for data bytes
             raise ValueError("Corrupted payload: incomplete data bytes")
+        # Read data bytes
         serialized_data[key] = payload[offset:offset + data_length]
+        # Move offset forward
         offset += data_length
 
+    # Return the unpacked serialized data dictionary
     return serialized_data
 
 
-def encrypt_serialized_data(serialized_data):
-    """Encrypt serialized protobuf messages using AES-CBC with PKCS#7 padding."""
+def encrypt_serialized_data(serialized_data) -> tuple[int, bytes, bytes]:
+    """
+    Encrypt serialized protobuf messages using AES-CBC with PKCS#7 padding.
+    
+    Arguments:
+        serialized_data (dict): Dictionary of serialized protobuf messages.
+    
+    Returns:
+        tuple: (original payload length, IV bytes, ciphertext bytes)
+    """
+    # Pack the serialized data into a single payload
     payload = _pack_serialized_data(serialized_data)
+    
+    # Encrypt the payload using AES-CBC with PKCS#7 padding
+    # Generate a random 16-byte IV
     iv = get_random_bytes(16)
+    # Create AES cipher
     cipher = AES.new(ENCRYPTION_KEY_BYTES, AES.MODE_CBC, iv=iv)
+    # Pad and encrypt the payload
     ciphertext = cipher.encrypt(pad(payload, AES.block_size))
-    return len(payload),iv, ciphertext
+    
+    # Return original payload length, IV, and ciphertext
+    return len(payload), iv, ciphertext
 
 
-def decrypt_serialized_data(iv, ciphertext):
-    """Decrypt AES-CBC payload back into serialized protobuf messages."""
+def decrypt_serialized_data(iv, ciphertext) -> dict:
+    """
+    Decrypt AES-CBC payload back into serialized protobuf messages.
+    
+    Arguments:
+        iv (bytes): The 16-byte AES IV used for decryption.
+        ciphertext (bytes): The AES-CBC encrypted payload.
+
+    Returns:
+        dict: Dictionary of deserialized protobuf messages.
+    """
+    # Decrypt the ciphertext using AES-CBC with PKCS#7 unpadding
     cipher = AES.new(ENCRYPTION_KEY_BYTES, AES.MODE_CBC, iv=iv)
+    
+    # Decrypt and unpad the payload
     payload = unpad(cipher.decrypt(ciphertext), AES.block_size)
+    
+    # Unpack the payload back into serialized data dictionary
     return _unpack_serialized_data(payload)
 
 
-def deserialize_data(serialized_data):
-    """Deserialize bytes back to protobuf messages."""
-    # Create new message instances
-    heart_rate = health_pb2.HeartRate()
-    oxygen_saturation = health_pb2.OxigenSaturation()
-    blood_pressure = health_pb2.ArterialBloodPressure()
-    skin_temp = health_pb2.SkinTemperature()
-    battery = health_pb2.BatteryLevel()
-    steps = health_pb2.StepsCounter()
+
+def deserialize_data(serialized_data) -> dict:
+    """
+    Deserialize bytes back to protobuf messages.
+    Arguments:
+        serialized_data (dict): Dictionary of serialized protobuf messages.
+    Returns:
+        dict: Dictionary of deserialized protobuf messages.
+    """
+    # Local dictionary to hold deserialized message instances
+    instances = {}
     
-    # Parse from bytes
-    heart_rate.ParseFromString(serialized_data['heart_rate'])
-    oxygen_saturation.ParseFromString(serialized_data['oxygen_saturation'])
-    blood_pressure.ParseFromString(serialized_data['blood_pressure'])
-    skin_temp.ParseFromString(serialized_data['skin_temperature'])
-    battery.ParseFromString(serialized_data['battery'])
-    steps.ParseFromString(serialized_data['steps'])
+    # Create new message instances for waveform data
+    if 'waveform' in serialized_data:
+        # Create new Waveform instance
+        waveform = raw_data_pb2.Waveform()
+        # Parse the serialized data into the waveform instance
+        waveform.ParseFromString(serialized_data['waveform'])
+        # Add the waveform instance to the local dictionary
+        instances['waveform'] = waveform
     
-    return {
-        'heart_rate': heart_rate,
-        'oxygen_saturation': oxygen_saturation,
-        'blood_pressure': blood_pressure,
-        'skin_temperature': skin_temp,
-        'battery': battery,
-        'steps': steps
-    }
+    # Return the instances dictionary
+    return instances
 
 
-def print_health_data(data):
-    """Print health data in a readable format."""
-    print("\n=== Health Data ===")
-    print(f"Heart Rate: {data['heart_rate'].value} bpm")
-    print(f"Oxygen Saturation: {data['oxygen_saturation'].value}%")
-    print(f"Blood Pressure: {data['blood_pressure'].systolic}/{data['blood_pressure'].diastolic} mmHg")
-    print(f"Skin Temperature: {data['skin_temperature'].value}°C")
-    print(f"Battery Level: {data['battery'].value}%")
-    print(f"Steps: {data['steps'].steps} (since epoch {data['steps'].epochInit})")
+def print_waveform_data(data) -> None:
+    """
+    Print waveform data in a readable format.
+    
+    Arguments:
+        data (dict): Dictionary containing the 'waveform' protobuf message.
+    
+    Returns:
+        None
+    """
+    
+    # If waveform data is present, print its contents
+    if 'waveform' in data:
+        wf = data['waveform']
+        print(f"Epoch: {wf.epoch}")
+        print(f"PPG Sampling Rate: {wf.ppg.samplingRate} Hz")
+        print(f"PPG Samples: {len(wf.ppg.ppg_samples)} samples")
+        if len(wf.ppg.ppg_samples) > 0:
+            sample = wf.ppg.ppg_samples[0]
+            print(f"  First sample - Red: {sample.red}, IR: {sample.ir}, Green: {sample.green}")
+        print(f"IMU Sampling Rate: {wf.imu.samplingRate} Hz")
+        print(f"IMU Acceleration samples: {len(wf.imu.acc)}")
+        if len(wf.imu.acc) > 0:
+            print(f"  First acceleration norm: {wf.imu.acc[0].norm}")
+        print(f"Embedded Heart Rate: {wf.heartRate.value} bpm")
+        print(f"Embedded Oxygen Saturation: {wf.oxigenSaturation.value}%")
+        print(f"Embedded Blood Pressure: {wf.arterialBloodPressure.systolic}/{wf.arterialBloodPressure.diastolic} mmHg")
+        print(f"Embedded Skin Temperature: {wf.skinTemperature.value}°C")
+    
 
-
-def save_to_file(serialized_data, filename):
+def save_to_file(serialized_data, filename) -> None:
     """
     Encrypt and save serialized data to a binary file.
+    
+    Arguments:
+        serialized_data (dict): Dictionary of serialized protobuf messages.
+        filename (str): The path to the output binary file.
+        
+    Returns:
+        None
     """
+    
     # Ensure directory exists
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     
@@ -227,10 +399,17 @@ def save_to_file(serialized_data, filename):
         f.write(ciphertext)
 
 
-def load_from_file(filename):
+def load_from_file(filename) -> dict:
     """
     Load and decrypt serialized data from a binary file.
+    
+    Arguments:
+        filename (str): The path to the input binary file.
+        
+    Returns:
+        dict: Dictionary of deserialized protobuf messages.
     """
+    
     # Read from file
     with open(filename, 'rb') as f:
         # Read IV
@@ -241,55 +420,64 @@ def load_from_file(filename):
             raise ValueError("Encrypted file missing 16-byte IV header")
         
         # Read Proto data length
-        proto_data_length = f.read(2)
+        proto_data_length_bytes = f.read(2)
 
         # Check Proto data length header
-        if len(proto_data_length) != 2:
+        if len(proto_data_length_bytes) != 2:
             raise ValueError("Encrypted file missing proto data length header")
 
         # Unpack Proto data length
-        encrypted_length = round_to_multiple_of_16(struct.unpack('<H', proto_data_length)[0])
+        original_length = struct.unpack('<H', proto_data_length_bytes)[0]
 
-        # Read ciphertext
-        ciphertext = f.read(encrypted_length)
+        # Read remaining ciphertext (everything else in the file)
+        ciphertext = f.read()
 
-        # Check ciphertext length
-        if len(ciphertext) != encrypted_length:
-            raise ValueError("Encrypted file has incomplete ciphertext data")
+        # Check we have some ciphertext
+        if len(ciphertext) == 0:
+            raise ValueError("Encrypted file has no ciphertext data")
         
     # Decrypt and unpack
     return decrypt_serialized_data(iv, ciphertext)
 
 
-def main():
-    """Main function demonstrating proto file usage."""
-    print("=== Protocol Buffer Example ===")
+def main() -> None:
+    """
+    Main function demonstrating proto file usage.
     
-    # 1. Create health data
-    print("\n1. Creating health data...")
-    health_data = create_health_data()
-    print_health_data(health_data)
+    Arguments:
+        None
+        
+    Returns:
+        None
+    """
+    # Print header
+    print("\n=== Protocol Buffer Example ===")
+    
+    # 1. Create waveform data
+    print("\n1. Creating waveform data...")
+    waveform_data = create_waveform_data()
+    print_waveform_data(waveform_data)
     
     # 2. Serialize to bytes
-    print("\n2. Serializing data...")
-    serialized = serialize_data(health_data)
+    print("\n2. Serializing waveform data...")
+    serialized = serialize_data(waveform_data)
     
     # 3. Save to file
     print("\n3. Encrypting and saving to file...")
-    save_to_file(serialized, "src/bin/health_data.bin")
-    print("Data saved to src/bin/health_data.bin")
+    save_to_file(serialized, "src/bin/ONAVITAL_raw_data.bin")
+    print("Data saved to src/bin/ONAVITAL_raw_data.bin")
 
     # 4. Load from file
     print("\n4. Loading and decrypting from file...")
-    loaded_serialized = load_from_file("src/bin/health_data.bin")
-    print("Data loaded from src/bin/health_data.bin")
+    loaded_serialized = load_from_file("src/bin/ONAVITAL_raw_data.bin")
+    print("Data loaded from src/bin/ONAVITAL_raw_data.bin")
 
     # 5. Deserialize back to objects
     print("\n5. Deserializing data...")
     loaded_data = deserialize_data(loaded_serialized)
-    print_health_data(loaded_data)
+    print_waveform_data(loaded_data)
     
-    print("\n=== Example Complete ===")
+    print("\n=== Example Complete ===\n")
 
 
 if __name__ == "__main__":

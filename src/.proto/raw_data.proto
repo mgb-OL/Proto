@@ -1,9 +1,6 @@
 syntax = "proto3";
 
-import "alg.proto";
-
 message Waveform {
-  // 64-bit epoch for >2038 year compatibility
 	uint64 epoch = 1;
 	Ppg ppg = 2;
 	Imu imu= 3;
@@ -12,6 +9,7 @@ message Waveform {
 	ArterialBloodPressure arterialBloodPressure = 6;
 	SkinTemperature skinTemperature = 7;
 }
+
 message Ppg {
   uint32 samplingRate = 1;
   
@@ -20,14 +18,43 @@ message Ppg {
 	  uint32 ir = 2;
 	  uint32 green = 3;
   }
-  
+
   repeated Ppg_channels ppg_samples = 2;
 }
+
 message Imu {
   uint32 samplingRate = 1;
+  
   message Acceleration {
     float norm = 1;
   }
+
   repeated Acceleration acc = 2;
+}
+
+message HeartRate {
+  uint32 value = 1;
+}
+
+message OxigenSaturation {
+  uint32 value = 1;
+}
+
+message ArterialBloodPressure {
+  uint32 systolic = 1;
+  uint32 diastolic = 2;
+}
+
+message SkinTemperature {
+  float value = 1;
+}
+
+message BatteryLevel {
+  uint32 value = 1;
+}
+
+message StepsCounter {
+  uint32 epochInit = 1;
+  uint32 steps = 2;
 }
 
