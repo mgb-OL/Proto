@@ -79,6 +79,18 @@ def _load_encryption_key() -> bytes:
 ENCRYPTION_KEY_BYTES = _load_encryption_key()
 
 
+# Utility function to invert a 4-byte IV (reverse byte order)
+def invert_iv(iv: bytes) -> bytes:
+    """
+    Invert a 4-byte IV (reverse byte order).
+    Arguments:
+        iv (bytes): 4-byte IV segment.
+    Returns:
+        bytes: IV with reversed byte order.
+    """
+    if len(iv) != 4:
+        raise ValueError("Input must be exactly 4 bytes")
+    return iv[::-1]
 
 # LOAD THE PROTOBUF MODULE
 
@@ -427,8 +439,13 @@ def load_from_file(filename: str) -> tuple[int, bytes, bytes]:
     # Read from file
     with open(filename, 'rb') as f:
         # Read IV
-        iv = f.read(16)
-        
+        iv_0 = f.read(4)
+        iv_1 = f.read(4)
+        iv_2 = f.read(4)
+        iv_3 = f.read(4)
+
+        iv = invert_iv(iv_0) + invert_iv(iv_1) + invert_iv(iv_2) + invert_iv(iv_3)
+
         # Check IV length
         if len(iv) != 16:
             raise ValueError("Encrypted file missing 16-byte IV header")
@@ -483,8 +500,8 @@ def main() -> None:
 
     # 4. Load from file
     print("\n4. Loading and decrypting from file...")
-    loaded_serialized = load_from_file("src/bin/ONAVITAL_raw_data.bin")
-    print("Data loaded from src/bin/ONAVITAL_raw_data.bin")
+    loaded_serialized = load_from_file("src/bin/raw_1759407099.bin")
+    print("Data loaded from src/bin/raw_1759407099.bin")
 
     # 5. Deserialize back to objects
     print("\n5. Deserializing data...")
