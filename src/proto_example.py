@@ -10,6 +10,9 @@ import os
 import struct
 from pathlib import Path
 from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+from Crypto.Util.Padding import pad, unpad
+import littlefs
 
 
 # Ensure demo encryption key is available via environment variable if none provided externally.
@@ -177,6 +180,340 @@ def get_sub_byte_array(byte_array: bytes, start: int, length: int = None) -> byt
     return byte_array[start:end]
 
 
+def extract_files_from_littlefs(memory_data: bytes, output_dir: str = "extracted_files") -> dict:
+    """
+    Extract files from LittleFS filesystem in memory.
+    
+    Arguments:
+        memory_data (bytes): Raw memory data containing LittleFS filesystem.
+        output_dir (str): Directory to extract files to (default: "extracted_files").
+    
+    Returns:
+        dict: Dictionary with file paths as keys and file contents as values.
+    
+    Raises:
+        Exception: If LittleFS cannot be mounted or files cannot be extracted.
+    """
+    extracted_files = {}
+    temp_file_path = None
+    
+    try:
+        # Check if littlefs library is available and get version info
+        try:
+            print(f"LittleFS library version: {littlefs.__version__ if hasattr(littlefs, '__version__') else 'unknown'}")
+        except:
+            pass
+        
+        # Create output directory
+        os.makedirs(output_dir, exist_ok=True)
+        print(f"Extracting files to: {output_dir}")
+        
+        # Try different approaches based on the library API
+        import tempfile
+        
+        # Create a temporary file with the memory data
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_file.write(memory_data)
+            temp_file_path = temp_file.name
+        
+        # Try different block sizes and API approaches
+        mounted_fs = None
+        
+        for block_size in [4096, 512, 1024, 2048, 8192]:
+            block_count = len(memory_data) // block_size
+            if block_count < 1:
+                continue
+                
+            print(f"Trying block_size={block_size}, block_count={block_count}")
+            
+            # Approach 1: Use UserContext with buffer
+            try:
+                ctx = littlefs.UserContext(len(memory_data))
+                ctx.buffer[:] = memory_data
+                fs = littlefs.LittleFS(context=ctx, mount=False)
+                fs.mount()
+                mounted_fs = fs
+                print(f"✅ Mounted with approach 1: UserContext")
+                break
+            except Exception as e1:
+                print(f"  Approach 1 failed: {e1}")
+            
+            # Approach 2: UserContext with auto-mount
+            try:
+                ctx = littlefs.UserContext(len(memory_data))
+                ctx.buffer[:] = memory_data
+                fs = littlefs.LittleFS(context=ctx, mount=True)
+                mounted_fs = fs
+                print(f"✅ Mounted with approach 2: UserContext auto-mount")
+                break
+            except Exception as e2:
+                print(f"  Approach 2 failed: {e2}")
+            
+            # Approach 3: Try with just context creation
+            try:
+                ctx = littlefs.UserContext(len(memory_data))
+                ctx.buffer[:] = memory_data
+                fs = littlefs.LittleFS(context=ctx)
+                mounted_fs = fs  
+                print(f"✅ Mounted with approach 3: context only")
+                break
+            except Exception as e3:
+                print(f"  Approach 3 failed: {e3}")
+        
+        if mounted_fs is None:
+            # Final fallback - try basic raw analysis
+            print("All LittleFS mounting approaches failed. Attempting raw analysis...")
+            return extract_files_raw_analysis(memory_data, output_dir)
+            
+        fs = mounted_fs
+        
+        # Create output directory
+        os.makedirs(output_dir, exist_ok=True)
+        print(f"Extracting files to: {output_dir}")
+        
+        # List and extract all files
+        def extract_recursive(path="/"):
+            try:
+                items = fs.listdir(path)
+                for item in items:
+                    item_path = f"{path.rstrip('/')}/{item}" if path != "/" else f"/{item}"
+                    
+                    try:
+                        # Check if it's a directory by trying to list it
+                        try:
+                            fs.listdir(item_path)
+                            # It's a directory
+                            local_dir = os.path.join(output_dir, item_path.lstrip('/'))
+                            os.makedirs(local_dir, exist_ok=True)
+                            extract_recursive(item_path)
+                        except:
+                            # It's a file
+                            try:
+                                with fs.open(item_path, 'rb') as f:
+                                    file_data = f.read()
+                                
+                                # Save to local filesystem
+                                local_path = os.path.join(output_dir, item_path.lstrip('/'))
+                                local_dir = os.path.dirname(local_path)
+                                if local_dir:
+                                    os.makedirs(local_dir, exist_ok=True)
+                                
+                                with open(local_path, 'wb') as f:
+                                    f.write(file_data)
+                                
+                                # Store in results
+                                extracted_files[item_path] = file_data
+                                print(f"Extracted: {item_path} ({len(file_data)} bytes)")
+                            except Exception as file_e:
+                                print(f"Error reading file {item_path}: {file_e}")
+                            
+                    except Exception as e:
+                        print(f"Error processing {item_path}: {e}")
+                        
+            except Exception as e:
+                print(f"Error listing directory {path}: {e}")
+        
+        # Start extraction from root
+        extract_recursive("/")
+        
+        # Unmount filesystem and cleanup
+        try:
+            fs.unmount()
+        except:
+            pass
+            
+        # Clean up temporary file
+        if temp_file_path:
+            try:
+                os.unlink(temp_file_path)
+            except:
+                pass
+        
+        print(f"Extraction complete. Found {len(extracted_files)} files.")
+        
+    except Exception as e:
+        print(f"LittleFS extraction failed: {e}")
+        # Make sure temp file is cleaned up even on error
+        if temp_file_path:
+            try:
+                os.unlink(temp_file_path)
+            except:
+                pass
+        raise
+    
+    return extracted_files
+
+
+def extract_files_raw_analysis(memory_data: bytes, output_dir: str) -> dict:
+    """
+    Fallback function to extract files using raw memory analysis when LittleFS mounting fails.
+    
+    Arguments:
+        memory_data (bytes): Raw memory data.
+        output_dir (str): Directory to extract files to.
+    
+    Returns:
+        dict: Dictionary with any extracted data.
+    """
+    print("Performing raw memory analysis for file patterns...")
+    extracted_files = {}
+    
+    try:
+        # Look for common file patterns and signatures
+        file_signatures = {
+            b'\x89PNG\r\n\x1a\n': '.png',
+            b'\xff\xd8\xff': '.jpg',
+            b'GIF8': '.gif',
+            b'%PDF': '.pdf',
+            b'PK\x03\x04': '.zip',
+            b'\x7fELF': '.elf',
+            b'MZ': '.exe',
+            # Protocol buffer patterns
+            b'\x08\x96\x01': '.pb',
+            b'\x12\x04': '.pb',
+            # Common embedded patterns
+            b'littlefs': '.txt',
+        }
+        
+        found_files = 0
+        offset = 0
+        
+        while offset < len(memory_data) - 16:
+            for signature, extension in file_signatures.items():
+                if memory_data[offset:offset+len(signature)] == signature:
+                    # Found a potential file
+                    print(f"Found potential {extension} file at offset 0x{offset:08x}")
+                    
+                    # Try to extract reasonable amount of data
+                    max_size = min(64 * 1024, len(memory_data) - offset)  # Max 64KB
+                    file_data = memory_data[offset:offset + max_size]
+                    
+                    # Save the file
+                    filename = f"extracted_{found_files:03d}_0x{offset:08x}{extension}"
+                    filepath = os.path.join(output_dir, filename)
+                    
+                    with open(filepath, 'wb') as f:
+                        f.write(file_data)
+                    
+                    extracted_files[f"/{filename}"] = file_data
+                    found_files += 1
+                    
+                    # Skip ahead to avoid overlapping extractions
+                    offset += len(signature)
+                    break
+            else:
+                offset += 1
+        
+        print(f"Raw analysis found {found_files} potential files")
+        
+    except Exception as e:
+        print(f"Raw analysis failed: {e}")
+    
+    return extracted_files
+
+
+def analyze_memory_for_littlefs(memory_data: bytes) -> dict:
+    """
+    Analyze memory data to detect potential LittleFS filesystem structures.
+    
+    Arguments:
+        memory_data (bytes): Raw memory data to analyze.
+    
+    Returns:
+        dict: Analysis results with potential filesystem information.
+    """
+    analysis = {
+        "size": len(memory_data),
+        "potential_filesystems": [],
+        "magic_signatures": []
+    }
+    
+    # Look for LittleFS magic signatures
+    littlefs_signatures = [
+        b"littlefs",
+        b"\x00\x00\x00\x20",  # Common LittleFS block header
+        b"\xff\xff\xff\xff",  # Erased flash pattern
+    ]
+    
+    for i, signature in enumerate(littlefs_signatures):
+        offset = 0
+        while True:
+            pos = memory_data.find(signature, offset)
+            if pos == -1:
+                break
+            analysis["magic_signatures"].append({
+                "signature": signature.hex(),
+                "offset": pos,
+                "description": ["LittleFS string", "Block header", "Erased flash"][i]
+            })
+            offset = pos + 1
+    
+    # Check for potential filesystem boundaries (aligned to common block sizes)
+    for block_size in [512, 1024, 2048, 4096, 8192]:
+        if len(memory_data) % block_size == 0:
+            analysis["potential_filesystems"].append({
+                "block_size": block_size,
+                "block_count": len(memory_data) // block_size,
+                "alignment": "perfect"
+            })
+    
+    print(f"Memory analysis:")
+    print(f"  Size: {analysis['size']} bytes")
+    print(f"  Magic signatures found: {len(analysis['magic_signatures'])}")
+    print(f"  Potential filesystem configs: {len(analysis['potential_filesystems'])}")
+    
+    return analysis
+
+
+def read_binary_file(filename: str, max_display_bytes: int = 1024) -> bytes:
+    """
+    Read a binary file and display its contents in various formats.
+    
+    Arguments:
+        filename (str): Path to the binary file to read.
+        max_display_bytes (int): Maximum number of bytes to display (default: 256).
+    
+    Returns:
+        bytes: The complete file contents as bytes.
+    
+    Raises:
+        FileNotFoundError: If the file doesn't exist.
+        OSError: If there's an error reading the file.
+    """
+    try:
+        with open(filename, 'rb') as f:
+            data = f.read()
+        
+        print(f"Binary file: {filename}")
+        print(f"File size: {len(data)} bytes")
+        
+        if len(data) == 0:
+            print("File is empty")
+            return data
+        
+        # Display limited data for readability
+        display_data = data[:max_display_bytes]
+        remaining = len(data) - len(display_data)
+        
+        print(f"Hex representation (first {len(display_data)} bytes):")
+        print(display_data.hex())
+                      
+        print("Byte-by-byte breakdown (first 32 bytes):")
+        for i, byte in enumerate(display_data[:32]):
+            print(f"  [{i:02d}]: 0x{byte:02x} ({byte:3d}) '{chr(byte) if 32 <= byte <= 126 else '.'}'")
+        
+        if remaining > 0:
+            print(f"... ({remaining} more bytes not displayed)")
+        
+        return data
+        
+    except FileNotFoundError:
+        print(f"Error: File '{filename}' not found")
+        raise
+    except OSError as e:
+        print(f"Error reading file '{filename}': {e}")
+        raise
+
 
 def load_from_file(filename: str) -> tuple[int, bytes, bytes]:
     """
@@ -190,6 +527,12 @@ def load_from_file(filename: str) -> tuple[int, bytes, bytes]:
     """
     # Local bytearray to hold the IV
     iv = bytearray()
+    memory = bytearray()
+    
+    # Read from file the memory
+    with open("src/bin/memory_dump.bin", 'rb') as f:
+        memory = f.read()
+    
         
     # Read from file
     with open(filename, 'rb') as f:
@@ -233,6 +576,80 @@ def load_from_file(filename: str) -> tuple[int, bytes, bytes]:
     # Return the proto data length and decrypted serialized data
     return decrypted_serialized_data
 
+
+def process_memory_dump_with_littlefs(filename: str, extract_dir: str = "extracted_littlefs") -> dict:
+    """
+    Process a memory dump file that might contain LittleFS filesystem data.
+    
+    Arguments:
+        filename (str): Path to the memory dump file.
+        extract_dir (str): Directory to extract LittleFS files to.
+    
+    Returns:
+        dict: Results containing analysis and extracted files.
+    """
+    print(f"\n=== Processing Memory Dump: {filename} ===")
+    
+    # Read the memory dump
+    memory_data = read_binary_file(filename, max_display_bytes=1024)
+    
+    # Analyze for LittleFS structures
+    print("\n--- Memory Analysis ---")
+    analysis = analyze_memory_for_littlefs(memory_data)
+    
+    results = {
+        "analysis": analysis,
+        "extracted_files": {},
+        "success": False
+    }
+    
+    # Try to extract files from LittleFS
+    print("\n--- LittleFS Extraction ---")
+    try:
+        extracted_files = extract_files_from_littlefs(memory_data, extract_dir)
+        results["extracted_files"] = extracted_files
+        results["success"] = True
+        
+        # Try to process any protobuf files found
+        print("\n--- Processing Extracted Protobuf Files ---")
+        for file_path, file_data in extracted_files.items():
+            if file_path.endswith(('.bin', '.proto', '.pb')):
+                print(f"\nAnalyzing: {file_path}")
+                try:
+                    # Try to parse as protobuf data directly
+                    proto_data = {'waveform': file_data}
+                    deserialized = deserialize_data(proto_data)
+                    if deserialized:
+                        print(f"Successfully parsed protobuf data from {file_path}")
+                        print_waveform_data(deserialized)
+                    
+                except Exception as e:
+                    print(f"Could not parse {file_path} as protobuf: {e}")
+                    
+                    # Try to decrypt if it looks like encrypted data
+                    if len(file_data) > 18:  # Minimum size for IV + length + some data
+                        try:
+                            # Extract potential IV and data
+                            iv = file_data[:16]
+                            proto_length_bytes = file_data[16:18]
+                            proto_length = struct.unpack('<H', proto_length_bytes)[0]
+                            encrypted_data = file_data[18:]
+                            
+                            print(f"Attempting decryption of {file_path}...")
+                            decrypted = decrypt_serialized_data(iv, proto_length, encrypted_data)
+                            if decrypted:
+                                deserialized = deserialize_data(decrypted)
+                                if deserialized:
+                                    print(f"Successfully decrypted and parsed {file_path}")
+                                    print_waveform_data(deserialized)
+                        except Exception as decrypt_e:
+                            print(f"Decryption failed for {file_path}: {decrypt_e}")
+        
+    except Exception as e:
+        print(f"LittleFS extraction failed: {e}")
+        results["error"] = str(e)
+    
+    return results
 
 
 def print_waveform_data(data: dict) -> None:
@@ -354,7 +771,71 @@ def main() -> None:
     loaded_data = deserialize_data(loaded_serialized)
     print_waveform_data(loaded_data)
     
+    # 3. Optional: Try LittleFS extraction if a memory dump file exists
+    memory_dump_files = [
+        "src/bin/memory_dump.bin",
+        "src/bin/flash_dump.bin", 
+        "src/bin/littlefs_dump.bin"
+    ]
+    
+    for dump_file in memory_dump_files:
+        if os.path.exists(dump_file):
+            print(f"\n3. Found memory dump: {dump_file}")
+            try:
+                results = process_memory_dump_with_littlefs(dump_file)
+                if results["success"]:
+                    print(f"Successfully extracted {len(results['extracted_files'])} files from LittleFS")
+                else:
+                    print("LittleFS extraction failed or no files found")
+                    
+            except Exception as e:
+                print(f"Error processing memory dump: {e}")
+            break
+    else:
+        print("\n3. No memory dump files found for LittleFS extraction")
+        print("   Place memory dumps in src/bin/ with names like:")
+        print("   - memory_dump.bin")
+        print("   - flash_dump.bin") 
+        print("   - littlefs_dump.bin")
+    
     print("\n=== Example Complete ===\n")
+
+
+def test_littlefs_extraction(memory_file: str) -> None:
+    """
+    Test function to extract files from a LittleFS memory dump.
+    
+    Arguments:
+        memory_file (str): Path to the memory dump file containing LittleFS data.
+    
+    Returns:
+        None
+    """
+    print(f"\n=== LittleFS Extraction Test ===")
+    print(f"Processing: {memory_file}")
+    
+    if not os.path.exists(memory_file):
+        print(f"Error: File {memory_file} not found")
+        print("Usage: test_littlefs_extraction('path/to/memory_dump.bin')")
+        return
+    
+    try:
+        results = process_memory_dump_with_littlefs(memory_file)
+        
+        if results["success"]:
+            print(f"\n✅ Success! Extracted {len(results['extracted_files'])} files")
+            print("Extracted files:")
+            for file_path in results["extracted_files"].keys():
+                print(f"  - {file_path}")
+        else:
+            print("❌ LittleFS extraction failed")
+            if "error" in results:
+                print(f"Error: {results['error']}")
+                
+    except Exception as e:
+        print(f"❌ Exception during extraction: {e}")
+    
+    print("=== Test Complete ===\n")
 
 
 if __name__ == "__main__":
