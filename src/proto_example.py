@@ -10,8 +10,6 @@ import os
 import struct
 from pathlib import Path
 from Crypto.Cipher import AES
-from Crypto.Random import get_random_bytes
-from Crypto.Util.Padding import pad, unpad
 import littlefs
 
 
@@ -340,7 +338,7 @@ def extract_files_from_littlefs(memory_data: bytes, output_dir: str = "extracted
         os.makedirs(output_dir, exist_ok=True)
         print(f"Extracting files to: {output_dir}")
         
-        # Try different approaches based on the library API
+        # Import tempfile for temporary file handling
         import tempfile
         
         # Create a temporary file with the memory data
@@ -378,7 +376,7 @@ def extract_files_from_littlefs(memory_data: bytes, output_dir: str = "extracted
                 break
             # Approach 1 failed
             except Exception as e1:
-                print(f"  Approach 1 failed: {e1}")
+                print(f"❌ Approach 1 failed: {e1}")
             
             # Approach 2: UserContext with auto-mount
             try:
@@ -396,7 +394,7 @@ def extract_files_from_littlefs(memory_data: bytes, output_dir: str = "extracted
             
             # Approach 2 failed
             except Exception as e2:
-                print(f"  Approach 2 failed: {e2}")
+                print(f"❌ Approach 2 failed: {e2}")
             
             # Approach 3: Try with just context creation
             try:
@@ -413,7 +411,7 @@ def extract_files_from_littlefs(memory_data: bytes, output_dir: str = "extracted
                 break
             # Approach 3 failed
             except Exception as e3:
-                print(f"  Approach 3 failed: {e3}")
+                print(f"❌ Approach 3 failed: {e3}")
         
         # If no approach succeeded, raise error
         if mounted_fs is None:
