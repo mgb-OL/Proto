@@ -102,7 +102,12 @@ def decrypt_serialized_data(iv: bytes, proto_data_length: int, ciphertext: bytes
     
     # Otherwise try to unpack using our custom format
     try:
-        return unpack_serialized_data(payload, proto_data_length)
+        # Unpack the serialized data
+        serialized_data = unpack_serialized_data(payload, proto_data_length)
+        # Return the unpacked serialized data
+        return serialized_data
+    
+    # If unpacking fails, treat as raw protobuf data
     except (UnicodeDecodeError, ValueError) as e:
         print(f"Failed to unpack custom format: {e}")
         print("Treating as raw protobuf data")
@@ -221,9 +226,12 @@ def load_from_file(filename: str) -> tuple[int, bytes, bytes]:
         # Check we have some ciphertext
         if len(ciphertext) == 0:
             raise ValueError("Encrypted file has no ciphertext data")
-        
+    
     # Decrypt and unpack
-    return decrypt_serialized_data(iv, proto_data_length, ciphertext)
+    decrypted_serialized_data = decrypt_serialized_data(bytes(iv), proto_data_length, ciphertext)
+    
+    # Return the proto data length and decrypted serialized data
+    return decrypted_serialized_data
 
 
 
@@ -258,21 +266,6 @@ def print_waveform_data(data: dict) -> None:
         
     
     
-def round_to_multiple_of_16(value: int) -> int:
-    """
-    Round a value to the nearest multiple of 16.
-    
-    Arguments:
-        value (int): The integer value to round.
-    
-    Returns:
-        int: The rounded value which is a multiple of 16.
-    """
-    # Round up to the next multiple of 16
-    return ((value + 15) // 16) * 16
-
-
-
 def unpack_serialized_data(payload: bytes, proto_data_length: int) -> dict:
     """
     Unpack a payload into the serialized protobuf message dictionary.
