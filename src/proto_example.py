@@ -8,8 +8,11 @@ import importlib.util
 import sys
 import os
 import struct
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import Any, Dict, List, Sequence, Tuple
+
 from Crypto.Cipher import AES
+from littlefs import LittleFS, LittleFSError, UserContext
 
 
 
@@ -46,17 +49,33 @@ def _load_encryption_key() -> bytes:
     
     # If there is a file path, try to read it
     if key_file_path:
-        try:
-            # Read file bytes
-            file_bytes = Path(key_file_path).read_bytes()
-            # Check length
+        # Resolve candidate locations so relative paths work regardless of cwd.
+        module_dir = Path(__file__).resolve().parent
+        project_root = module_dir.parent
+        raw_path = Path(key_file_path).expanduser()
+        candidate_paths = []
+
+        if raw_path.is_file():
+            candidate_paths.append(raw_path)
+        else:
+            for base in (module_dir, project_root):
+                candidate = (base / key_file_path).resolve()
+                if candidate.is_file():
+                    candidate_paths.append(candidate)
+                    break
+
+        for candidate in candidate_paths:
+            try:
+                file_bytes = candidate.read_bytes()
+            except OSError:
+                continue
+
             if len(file_bytes) in {16, 24, 32}:
-                # Return valid key
                 return file_bytes
-            
-        # If not found or error reading, ignore
-        except OSError:
-            pass
+
+    raise RuntimeError(
+        "Unable to load AES key. Set PROTO_ENCRYPTION_KEY or PROTO_ENCRYPTION_KEY_FILE to a valid 16/24/32-byte key."
+    )
 
 # LOAD THE ENCRYPTION KEY
 ENCRYPTION_KEY_BYTES = _load_encryption_key()
@@ -72,6 +91,11 @@ raw_data_pb2 = importlib.util.module_from_spec(spec)
 sys.modules["raw_data_pb2"] = raw_data_pb2
 # Execute the module
 spec.loader.exec_module(raw_data_pb2)
+
+
+DEFAULT_LITTLEFS_BLOCK_SIZES: tuple[int, ...] = (4096, 2048, 1024, 512, 256, 128)
+DEFAULT_LITTLEFS_LOOKAHEAD = 128
+EXTRACTION_CHUNK_SIZE = 64 * 1024
 
 
 
@@ -192,7 +216,7 @@ def get_sub_byte_array(byte_array: bytes, start: int, length: int = None) -> byt
 
 
 
-def load_from_file(filename: str) -> tuple[int, bytes, bytes]:
+def load_from_file(filename: str) -> dict:
     """
     Load and decrypt serialized data from a binary file.
     
@@ -200,7 +224,7 @@ def load_from_file(filename: str) -> tuple[int, bytes, bytes]:
         filename (str): The path to the input binary file.
         
     Returns:
-        tuple: (original payload length, IV bytes, ciphertext bytes)
+        dict: Dictionary keyed by protobuf field name with serialized bytes values.
     """
     # Local bytearray to hold the IV
     iv = bytearray()
@@ -210,7 +234,6 @@ def load_from_file(filename: str) -> tuple[int, bytes, bytes]:
     with open("src/bin/memory_dump.bin", 'rb') as f:
         memory = f.read()
     
-        
     # Read from file
     with open(filename, 'rb') as f:
         
@@ -353,6 +376,245 @@ def unpack_serialized_data(payload: bytes, proto_data_length: int) -> dict:
     return serialized_data
 
 
+def _resolve_binary_path(filename: str) -> Path:
+    """Resolve the absolute path to a binary resource inside the project."""
+    candidate = Path(filename)
+    module_dir = Path(__file__).resolve().parent
+    project_root = module_dir.parent
+
+    variants = [candidate]
+    if len(candidate.parts) > 1:
+        variants.append(Path(candidate.name))
+
+    bases: List[Path | None] = [
+        None,
+        Path.cwd(),
+        module_dir,
+        module_dir / "bin",
+        project_root,
+        project_root / "src",
+        project_root / "src" / "bin",
+    ]
+
+    seen = set()
+    for base in bases:
+        for variant in variants:
+            if variant.is_absolute():
+                target = variant
+            elif base is None:
+                target = variant
+            else:
+                target = base / variant
+
+            try:
+                resolved = target.resolve()
+            except OSError:
+                continue
+
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+
+            if resolved.is_file():
+                return resolved
+
+    raise FileNotFoundError(f"Unable to locate binary file '{filename}' relative to the project")
+
+
+def _mount_littlefs_from_bytes(data: bytes, block_size: int, lookahead_size: int) -> Tuple[LittleFS, UserContext, int]:
+    """Create and mount a LittleFS instance backed by in-memory bytes."""
+    if block_size <= 0:
+        raise ValueError("Block size must be a positive integer")
+
+    block_count = len(data) // block_size
+    if block_count == 0:
+        raise ValueError("Block size is larger than the available data length")
+
+    context = UserContext(len(data))
+    context.buffer[:] = data
+
+    fs = LittleFS(
+        context=context,
+        block_size=block_size,
+        block_count=block_count,
+        read_size=block_size,
+        prog_size=block_size,
+        cache_size=block_size,
+        lookahead_size=lookahead_size,
+        mount=False,
+    )
+    fs.mount()
+    return fs, context, block_count
+
+
+def _extract_littlefs_files(fs: LittleFS, output_dir: Path) -> List[Dict[str, Any]]:
+    """Extract all files from a mounted LittleFS instance into an output directory."""
+    extracted: List[Dict[str, Any]] = []
+    chunk_size = EXTRACTION_CHUNK_SIZE
+
+    for root, _, files in fs.walk("/"):
+        for filename in files:
+            posix_path = PurePosixPath(root) / filename
+            relative_path = posix_path.relative_to("/")
+            local_path = output_dir.joinpath(*relative_path.parts)
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            lfs_path = "/" + relative_path.as_posix()
+
+            file_size = 0
+            with fs.open(lfs_path, "rb") as src, open(local_path, "wb") as dst:
+                while True:
+                    chunk = src.read(chunk_size)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+                    file_size += len(chunk)
+
+            extracted.append(
+                {
+                    "littlefs_path": lfs_path,
+                    "output_path": str(local_path),
+                    "size": file_size,
+                }
+            )
+
+    extracted.sort(key=lambda entry: entry["littlefs_path"])
+    return extracted
+
+
+def read_binary_file(filename: str) -> bytes:
+    """Read the content of a binary file from common project locations."""
+    path = _resolve_binary_path(filename)
+    return path.read_bytes()
+
+
+def analyze_memory_for_littlefs(
+    data: bytes,
+    block_sizes: Sequence[int] = DEFAULT_LITTLEFS_BLOCK_SIZES,
+    lookahead_size: int = DEFAULT_LITTLEFS_LOOKAHEAD,
+) -> Dict[str, Any]:
+    """Attempt to discover LittleFS configurations present in raw memory bytes."""
+    successful_mounts: List[Dict[str, Any]] = []
+
+    for block_size in block_sizes:
+        fs: LittleFS | None = None
+        try:
+            fs, _, block_count = _mount_littlefs_from_bytes(data, block_size, lookahead_size)
+        except (LittleFSError, ValueError):
+            continue
+
+        try:
+            tree_overview: List[Dict[str, Any]] = []
+            for root, dirs, files in fs.walk("/"):
+                tree_overview.append(
+                    {
+                        "path": root,
+                        "directories": list(dirs),
+                        "files": list(files),
+                    }
+                )
+
+            successful_mounts.append(
+                {
+                    "block_size": block_size,
+                    "block_count": block_count,
+                    "read_size": block_size,
+                    "prog_size": block_size,
+                    "cache_size": block_size,
+                    "lookahead_size": lookahead_size,
+                    "root_entries": fs.listdir("/"),
+                    "tree": tree_overview,
+                }
+            )
+        finally:
+            if fs is not None:
+                try:
+                    fs.unmount()
+                except LittleFSError:
+                    pass
+
+    return {
+        "data_length": len(data),
+        "attempted_block_sizes": list(block_sizes),
+        "successful_mounts": successful_mounts,
+    }
+
+
+def process_memory_dump_with_littlefs(
+    filename: str,
+    output_dir: str | Path | None = None,
+    *,
+    block_size: int | None = None,
+    block_size_candidates: Sequence[int] = DEFAULT_LITTLEFS_BLOCK_SIZES,
+    lookahead_size: int = DEFAULT_LITTLEFS_LOOKAHEAD,
+) -> Dict[str, Any]:
+    """Extract all LittleFS files contained in a raw memory dump."""
+    source_path = _resolve_binary_path(filename)
+    data = source_path.read_bytes()
+
+    chosen_block_size = block_size
+    analysis: Dict[str, Any] | None = None
+
+    if chosen_block_size is None:
+        analysis = analyze_memory_for_littlefs(data, block_size_candidates, lookahead_size)
+        if not analysis["successful_mounts"]:
+            raise RuntimeError("Unable to locate a LittleFS filesystem in the provided dump")
+        chosen_block_size = analysis["successful_mounts"][0]["block_size"]
+
+    fs: LittleFS | None = None
+    _context: UserContext | None = None
+    extracted_files: List[Dict[str, Any]] = []
+
+    try:
+        fs, _context, _ = _mount_littlefs_from_bytes(data, chosen_block_size, lookahead_size)
+
+        if output_dir is None:
+            default_name = f"{source_path.stem}_extracted"
+            output_path = source_path.parent / default_name
+        else:
+            output_path = Path(output_dir)
+
+        output_path = output_path.resolve()
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        extracted_files = _extract_littlefs_files(fs, output_path)
+    finally:
+        if fs is not None:
+            try:
+                fs.unmount()
+            except LittleFSError:
+                pass
+
+    result: Dict[str, Any] = {
+        "source": str(source_path),
+        "output_dir": str(output_path),
+        "config": {
+            "block_size": chosen_block_size,
+            "block_count": len(data) // chosen_block_size,
+            "lookahead_size": lookahead_size,
+            "read_size": chosen_block_size,
+            "prog_size": chosen_block_size,
+            "cache_size": chosen_block_size,
+        },
+        "extracted_files": extracted_files,
+    }
+
+    if analysis is not None:
+        result["analysis"] = analysis
+
+    return result
+
+
+def test_littlefs_extraction(
+    filename: str = "src/bin/memory_dump.bin",
+    output_dir: str | Path | None = None,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Convenience helper to run the extraction process and print a summary."""
+    result = process_memory_dump_with_littlefs(filename, output_dir=output_dir, **kwargs)
+    file_count = len(result["extracted_files"])
+    print(f"Extracted {file_count} file(s) to {result['output_dir']}")
+    return result
+
 
 def main() -> None:
     """
@@ -370,14 +632,21 @@ def main() -> None:
     # 1. Load from file
     print("\n1. Loading and decrypting from file...")
     loaded_serialized = load_from_file("src/bin/raw_1759829184.bin")
-    
+
     # 2. Deserialize back to objects
     print("\n2. Deserializing data...")
     loaded_data = deserialize_data(loaded_serialized)
     print_waveform_data(loaded_data)
-    
-    
 
+    # 3. Extract LittleFS-backed files from memory dump
+    print("\n3. Extracting LittleFS filesystem contents...")
+    extraction_result = process_memory_dump_with_littlefs("src/bin/memory_dump.bin")
+    extracted_files = extraction_result["extracted_files"]
+    print(
+        f"Extracted {len(extracted_files)} file(s) from LittleFS image into {extraction_result['output_dir']}"
+    )
+
+    
     # Finalize extraction process
     print("\n=== Test Complete ===\n")
 
