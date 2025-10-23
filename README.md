@@ -113,6 +113,26 @@ Run the main script:
 python src/main.py
 ```
 
+### Form UI (File + Serial + User + DateTime)
+
+A simple Tkinter form is available at `src/form_gui.py` with:
+
+- File picker (Browse)
+- Text inputs: Serial Number, User ID
+- Two datetime pickers (date via calendar + hour/minute)
+
+Run it in two ways:
+
+```powershell
+# 1) VS Code task
+# From the Command Palette: "Tasks: Run Task" → "Run Form GUI"
+
+# 2) Directly via Python (using the workspace venv)
+.venv\Scripts\python.exe src\form_gui.py
+```
+
+Requirements: `tkcalendar` is included in `requirements.txt` and installed when you set up the environment.
+
 ## Development
 
 ### Project Structure

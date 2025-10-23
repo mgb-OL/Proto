@@ -6,12 +6,16 @@ Example of how to read and use Protocol Buffer data.
 # Import the generated protobuf classes
 import importlib.util, sys, os, struct
 import tkinter as tk
-from tkinter import filedialog, simpledialog
+from tkinter import filedialog
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Sequence, Tuple
 from Crypto.Cipher import AES
 from google.protobuf.message import DecodeError
 from littlefs import LittleFS, LittleFSError, UserContext
+from datetime import datetime
+
+# Import the form GUI
+from src.form_gui import DataCollectionForm
 
 
 
@@ -577,25 +581,6 @@ def test_littlefs_extraction(
     return result
 
 
-def select_memory_dump_file():
-    """Open a file dialog to select a memory dump file."""
-    root = tk.Tk()
-    root.withdraw()  # Hide the root window
-    
-    file_path = filedialog.askopenfilename(
-        title="Select Memory Dump File",
-        initialdir=Path.cwd() / "src" / "bin",  # Start in your bin directory
-        filetypes=[
-            ("Binary files", "*.bin"),
-            ("All files", "*.*")
-        ]
-    )
-    
-    if file_path:
-        return Path(file_path)
-    return None
-
-
 def main() -> None:
     """
     Main function demonstrating proto file usage.
@@ -609,107 +594,103 @@ def main() -> None:
     # Initialize index
     i = 1
     
-    # 1. Extract memory filesystem contents
-    print(f"\n{i}. Select the memory dump file to process using file dialog...")
-    # Increment index
+    # 1. Show form to collect all required data
+    print(f"\n{i}. Launching data collection form...")
     i += 1
     
-    # Use file dialog to select memory dump file
-    memory_dump_path = select_memory_dump_file()
+    # Show the form and collect user input
+    form_data = DataCollectionForm.show_form()
     
-    # If no file selected, exit
-    if memory_dump_path:
-        # Print selected file
-        print(f"\nProcessing memory file: {memory_dump_path}\n")
-
-        # Print instruction to enter device SN
-        print(f"\n{i}. Insert the device serial number (SN) using the input dialog...")
-        i += 1
-        
-        # Device serial number input to store extracted files
-        device_SN = simpledialog.askstring("SN", "Enter the device serial number (SN):")
-
-        if not device_SN:
-            print("No serial number provided. Exiting.")
-            return
-        
-        # Print the device SN being used
-        print(f"\nUsing device SN: {device_SN}\n")
-        
-        # Perform extraction
-        extraction_result = process_memory_dump_with_littlefs(memory_dump_path, output_dir=memory_dump_path.parent / device_SN)
-        extracted_files = extraction_result["extracted_files"]
-        
-        
-        # Identify candidate binary files for decryption
-        preferred_candidates = []
-        fallback_candidates = []
-        raw_files_found = 0
-        meas_files_found = 0
-
-        # For each extracted file, check if it's a candidate
-        for entry in extracted_files:
-            # Lowercase filename for comparison
-            filename = Path(entry["output_path"]).name.lower()
-            # Skip measurement metadata files
-            if filename.startswith("meas"):
-                meas_files_found += 1
-                continue
-            # Consider only .bin files
-            if entry["output_path"].lower().endswith(".bin"):
-                # Prefer files in /data/raw/ directory
-                if "/data/raw/" in entry["littlefs_path"].lower():
-                    raw_files_found += 1
-                    preferred_candidates.append(entry)
-                # Otherwise, add to fallback list
-                else:
-                    fallback_candidates.append(entry)
-        
-        # Print extraction summary
-        print(f"\n{i}. Extracted {len(extracted_files)} file(s) from binary image into {extraction_result['output_dir']}")
-        print(f"\nFound {raw_files_found} raw file(s) and {meas_files_found} meas file(s) during extraction.")
-        i += 1
-        
-        # Combine preferred and fallback candidates
-        candidates = preferred_candidates + fallback_candidates
-
-        # Initialize variables for selected file
-        decoded_data: Dict[str, Any] | None = None
-
-        # Try to decrypt each candidate file
-        for entry in candidates:
-            # Get the candidate file path
-            candidate_path = entry["output_path"]
-            # Print attempt message
-            print(f"\n{i}.1 Attempting to decrypt {entry['littlefs_path'].split('/')[-1]} \n")
-            
-            # Attempt to load and decrypt the file
-            try:
-                # Load the serialized data from the candidate file
-                candidate_serialized = load_from_file(candidate_path)
-                # Deserialize the data
-                decoded_data = deserialize_data(candidate_serialized)
-            # If deserialization fails, skip the file and show error
-            except (OSError, ValueError, RuntimeError, DecodeError) as exc:
-                print(f"  Skipping file due to error: {exc}")
-                continue
-            
-            # 4. Load from the selected file
-            print(f"\n\n{i}.2 Loading and decrypting from file...")
-            print(f"\nUsing extracted file: {candidate_path.split('\\')[-1]}\n")
-
-            # 5. Deserialize back to objects
-            print(f"\n{i}.3 Saving data")
-            print_waveform_data(decoded_data)
-
-            # Finalize extraction process
-            print(f"\nExtraction from file: {candidate_path.split('\\')[-1]} completed \n")
-            i += 1
-
-        print(f"\n=== Extraction process completed ===\n")
+    # If user canceled, exit
+    if form_data is None:
+        print("Form canceled. Exiting.")
+        return
     
-    else:
-        print("No file selected. Exiting.")
+    # Extract values from form
+    memory_dump_path = Path(form_data['file_path'])
+    device_SN = form_data['serial_number']
+    user_id = form_data['user_id']
+    start_datetime = form_data['start_datetime']
+    end_datetime = form_data['end_datetime']
+    
+    # Print collected data
+    print(f"\nProcessing memory file: {memory_dump_path}")
+    print(f"Using device SN: {device_SN}")
+    print(f"User ID: {user_id}")
+    print(f"Time range: {start_datetime.strftime('%Y-%m-%d %H:%M')} to {end_datetime.strftime('%Y-%m-%d %H:%M')}\n")
+        
+    # Perform extraction
+    extraction_result = process_memory_dump_with_littlefs(memory_dump_path, output_dir=memory_dump_path.parent / device_SN)
+    extracted_files = extraction_result["extracted_files"]
+    
+    
+    # Identify candidate binary files for decryption
+    preferred_candidates = []
+    fallback_candidates = []
+    raw_files_found = 0
+    meas_files_found = 0
 
+    # For each extracted file, check if it's a candidate
+    for entry in extracted_files:
+        # Lowercase filename for comparison
+        filename = Path(entry["output_path"]).name.lower()
+        # Skip measurement metadata files
+        if filename.startswith("meas"):
+            meas_files_found += 1
+            continue
+        # Consider only .bin files
+        if entry["output_path"].lower().endswith(".bin"):
+            # Prefer files in /data/raw/ directory
+            if "/data/raw/" in entry["littlefs_path"].lower():
+                raw_files_found += 1
+                preferred_candidates.append(entry)
+            # Otherwise, add to fallback list
+            else:
+                fallback_candidates.append(entry)
+    
+    # Print extraction summary
+    print(f"\n{i}. Extracted {len(extracted_files)} file(s) from binary image into {extraction_result['output_dir']}")
+    print(f"\nFound {raw_files_found} raw file(s) and {meas_files_found} meas file(s) during extraction.")
+    i += 1
+    
+    # Combine preferred and fallback candidates
+    candidates = preferred_candidates + fallback_candidates
+
+    # Initialize variables for selected file
+    decoded_data: Dict[str, Any] | None = None
+
+    # Try to decrypt each candidate file
+    for entry in candidates:
+        # Get the candidate file path
+        candidate_path = entry["output_path"]
+        # Print attempt message
+        print(f"\n{i}.1 Attempting to decrypt {entry['littlefs_path'].split('/')[-1]} \n")
+        
+        # Attempt to load and decrypt the file
+        try:
+            # Load the serialized data from the candidate file
+            candidate_serialized = load_from_file(candidate_path)
+            # Deserialize the data
+            decoded_data = deserialize_data(candidate_serialized)
+        # If deserialization fails, skip the file and show error
+        except (OSError, ValueError, RuntimeError, DecodeError) as exc:
+            print(f"  Skipping file due to error: {exc}")
+            continue
+        
+        # 4. Load from the selected file
+        print(f"\n\n{i}.2 Loading and decrypting from file...")
+        print(f"\nUsing extracted file: {candidate_path.split('\\')[-1]}\n")
+
+        # 5. Deserialize back to objects
+        print(f"\n{i}.3 Saving data")
+        print_waveform_data(decoded_data)
+
+        # Finalize extraction process
+        print(f"\nExtraction from file: {candidate_path.split('\\')[-1]} completed \n")
+        i += 1
+
+    print(f"\n=== Extraction process completed ===\n")
+    a=0
+    
 if __name__ == "__main__":
     main()
