@@ -4,15 +4,15 @@ Example of how to read and use Protocol Buffer data.
 """
 
 # Import the generated protobuf classes
-import importlib.util
-import sys
-import os
-import struct
+import importlib.util, sys, os, struct
+import tkinter as tk
+from tkinter import filedialog, simpledialog
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Sequence, Tuple
-
 from Crypto.Cipher import AES
+from google.protobuf.message import DecodeError
 from littlefs import LittleFS, LittleFSError, UserContext
+
 
 
 
@@ -217,64 +217,26 @@ def get_sub_byte_array(byte_array: bytes, start: int, length: int = None) -> byt
 
 
 def load_from_file(filename: str) -> dict:
-    """
-    Load and decrypt serialized data from a binary file.
-    
-    Arguments:
-        filename (str): The path to the input binary file.
-        
-    Returns:
-        dict: Dictionary keyed by protobuf field name with serialized bytes values.
-    """
-    # Local bytearray to hold the IV
-    iv = bytearray()
-    memory = bytearray()
-    
-    # Read from file the memory
-    with open("src/bin/memory_dump.bin", 'rb') as f:
-        memory = f.read()
-    
-    # Read from file
-    with open(filename, 'rb') as f:
-        
-        # Read IV
-        iv_0 = f.read(4)
-        iv_1 = f.read(4)
-        iv_2 = f.read(4)
-        iv_3 = f.read(4)
+    """Load serialized protobuf data from disk, handling encrypted and raw layouts."""
+    path = Path(filename)
+    if not path.is_file():
+        path = _resolve_binary_path(filename)
 
-        # Combine IV parts
-        iv.extend(iv_0)
-        iv.extend(iv_1)
-        iv.extend(iv_2)
-        iv.extend(iv_3)
+    file_bytes = path.read_bytes()
 
-        # Check IV length
-        if len(iv) != 16:
-            raise ValueError("Encrypted file missing 16-byte IV header")
-        
-        # Read Proto data length
-        proto_data_length_bytearray = f.read(2)
-                
-        # Check Proto data length header
-        if len(proto_data_length_bytearray) != 2:
-            raise ValueError("Encrypted file missing proto data length header")
+    if len(file_bytes) >= 18:
+        iv = file_bytes[:16]
+        proto_length = struct.unpack('<H', file_bytes[16:18])[0]
+        ciphertext = file_bytes[18:]
 
-        # Unpack Proto data length
-        proto_data_length = struct.unpack('<H', proto_data_length_bytearray)[0]
+        ciphertext_has_blocks = len(ciphertext) % 16 == 0 and len(ciphertext) > 0
+        if ciphertext_has_blocks and 0 < proto_length <= len(ciphertext):
+            try:
+                return decrypt_serialized_data(iv, proto_length, ciphertext)
+            except ValueError:
+                pass
 
-        # Read remaining ciphertext (everything else in the file)
-        ciphertext = f.read()
-        
-        # Check we have some ciphertext
-        if len(ciphertext) == 0:
-            raise ValueError("Encrypted file has no ciphertext data")
-    
-    # Decrypt and unpack
-    decrypted_serialized_data = decrypt_serialized_data(bytes(iv), proto_data_length, ciphertext)
-    
-    # Return the proto data length and decrypted serialized data
-    return decrypted_serialized_data
+    return {'waveform': file_bytes}
 
 
 
@@ -330,7 +292,6 @@ def unpack_serialized_data(payload: bytes, proto_data_length: int) -> dict:
     total_length = len(payload)
     
     print(f"Unpacking payload: {total_length} bytes, expected proto length: {proto_data_length}")
-    print(f"First 32 bytes: {payload[:32].hex()}")
     
     # Unpack until we reach the end of the payload
     while offset < total_length:
@@ -616,6 +577,25 @@ def test_littlefs_extraction(
     return result
 
 
+def select_memory_dump_file():
+    """Open a file dialog to select a memory dump file."""
+    root = tk.Tk()
+    root.withdraw()  # Hide the root window
+    
+    file_path = filedialog.askopenfilename(
+        title="Select Memory Dump File",
+        initialdir=Path.cwd() / "src" / "bin",  # Start in your bin directory
+        filetypes=[
+            ("Binary files", "*.bin"),
+            ("All files", "*.*")
+        ]
+    )
+    
+    if file_path:
+        return Path(file_path)
+    return None
+
+
 def main() -> None:
     """
     Main function demonstrating proto file usage.
@@ -626,30 +606,110 @@ def main() -> None:
     Returns:
         None
     """
-    # Print header
-    print("\n=== Protocol Buffer Example ===")
+    # Initialize index
+    i = 1
     
-    # 1. Load from file
-    print("\n1. Loading and decrypting from file...")
-    loaded_serialized = load_from_file("src/bin/raw_1759829184.bin")
-
-    # 2. Deserialize back to objects
-    print("\n2. Deserializing data...")
-    loaded_data = deserialize_data(loaded_serialized)
-    print_waveform_data(loaded_data)
-
-    # 3. Extract LittleFS-backed files from memory dump
-    print("\n3. Extracting LittleFS filesystem contents...")
-    extraction_result = process_memory_dump_with_littlefs("src/bin/memory_dump.bin")
-    extracted_files = extraction_result["extracted_files"]
-    print(
-        f"Extracted {len(extracted_files)} file(s) from LittleFS image into {extraction_result['output_dir']}"
-    )
-
+    # 1. Extract memory filesystem contents
+    print(f"\n{i}. Select the memory dump file to process using file dialog...")
+    # Increment index
+    i += 1
     
-    # Finalize extraction process
-    print("\n=== Test Complete ===\n")
+    # Use file dialog to select memory dump file
+    memory_dump_path = select_memory_dump_file()
+    
+    # If no file selected, exit
+    if memory_dump_path:
+        # Print selected file
+        print(f"\nProcessing memory file: {memory_dump_path}\n")
 
+        # Print instruction to enter device SN
+        print(f"\n{i}. Insert the device serial number (SN) using the input dialog...")
+        i += 1
+        
+        # Device serial number input to store extracted files
+        device_SN = simpledialog.askstring("SN", "Enter the device serial number (SN):")
+
+        if not device_SN:
+            print("No serial number provided. Exiting.")
+            return
+        
+        # Print the device SN being used
+        print(f"\nUsing device SN: {device_SN}\n")
+        
+        # Perform extraction
+        extraction_result = process_memory_dump_with_littlefs(memory_dump_path, output_dir=memory_dump_path.parent / device_SN)
+        extracted_files = extraction_result["extracted_files"]
+        
+        
+        # Identify candidate binary files for decryption
+        preferred_candidates = []
+        fallback_candidates = []
+        raw_files_found = 0
+        meas_files_found = 0
+
+        # For each extracted file, check if it's a candidate
+        for entry in extracted_files:
+            # Lowercase filename for comparison
+            filename = Path(entry["output_path"]).name.lower()
+            # Skip measurement metadata files
+            if filename.startswith("meas"):
+                meas_files_found += 1
+                continue
+            # Consider only .bin files
+            if entry["output_path"].lower().endswith(".bin"):
+                # Prefer files in /data/raw/ directory
+                if "/data/raw/" in entry["littlefs_path"].lower():
+                    raw_files_found += 1
+                    preferred_candidates.append(entry)
+                # Otherwise, add to fallback list
+                else:
+                    fallback_candidates.append(entry)
+        
+        # Print extraction summary
+        print(f"\n{i}. Extracted {len(extracted_files)} file(s) from binary image into {extraction_result['output_dir']}")
+        print(f"\nFound {raw_files_found} raw file(s) and {meas_files_found} meas file(s) during extraction.")
+        i += 1
+        
+        # Combine preferred and fallback candidates
+        candidates = preferred_candidates + fallback_candidates
+
+        # Initialize variables for selected file
+        decoded_data: Dict[str, Any] | None = None
+
+        # Try to decrypt each candidate file
+        for entry in candidates:
+            # Get the candidate file path
+            candidate_path = entry["output_path"]
+            # Print attempt message
+            print(f"\n{i}.1 Attempting to decrypt {entry['littlefs_path'].split('/')[-1]} \n")
+            
+            # Attempt to load and decrypt the file
+            try:
+                # Load the serialized data from the candidate file
+                candidate_serialized = load_from_file(candidate_path)
+                # Deserialize the data
+                decoded_data = deserialize_data(candidate_serialized)
+            # If deserialization fails, skip the file and show error
+            except (OSError, ValueError, RuntimeError, DecodeError) as exc:
+                print(f"  Skipping file due to error: {exc}")
+                continue
+            
+            # 4. Load from the selected file
+            print(f"\n\n{i}.2 Loading and decrypting from file...")
+            print(f"\nUsing extracted file: {candidate_path.split('\\')[-1]}\n")
+
+            # 5. Deserialize back to objects
+            print(f"\n{i}.3 Saving data")
+            print_waveform_data(decoded_data)
+
+            # Finalize extraction process
+            print(f"\nExtraction from file: {candidate_path.split('\\')[-1]} completed \n")
+            i += 1
+
+        print(f"\n=== Extraction process completed ===\n")
+    
+    else:
+        print("No file selected. Exiting.")
 
 if __name__ == "__main__":
     main()
