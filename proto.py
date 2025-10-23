@@ -13,9 +13,11 @@ from Crypto.Cipher import AES
 from google.protobuf.message import DecodeError
 from littlefs import LittleFS, LittleFSError, UserContext
 from datetime import datetime
+import csv
 
 # Import the form GUI
 from src.form_gui import DataCollectionForm
+from src.waveform import Waveform
 
 
 
@@ -581,6 +583,103 @@ def test_littlefs_extraction(
     return result
 
 
+def export_waveforms_to_csv(waveforms: List[Any], output_path: Path) -> None:
+    """
+    Export all waveform data to a single comprehensive CSV file.
+    Each row contains metadata plus one sample from PPG and IMU data.
+    
+    Arguments:
+        waveforms: List of Waveform objects
+        output_path: Path where the CSV file will be saved
+    """
+    if not waveforms:
+        print("No waveforms to export.")
+        return
+    
+    # Define comprehensive CSV headers
+    headers = [
+        'File Name',
+        'Device SN',
+        'User ID',
+        'Pilot',
+        'Start Time',
+        'End Time',
+        'Epoch',
+        'Heart Rate (bpm)',
+        'SpO2 (%)',
+        'Systolic BP (mmHg)',
+        'Diastolic BP (mmHg)',
+        'Skin Temperature (°C)',
+        'PPG Sampling Rate (Hz)',
+        'IMU Sampling Rate (Hz)',
+        'Sample Index',
+        'PPG IR',
+        'PPG Red',
+        'PPG Green',
+        'IMU Acceleration Norm'
+    ]
+    
+    csv_file = output_path / 'waveforms_complete.csv'
+    
+    with open(csv_file, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(headers)
+        
+        for wf in waveforms:
+            # Get metadata that repeats for each row
+            metadata = [
+                wf.file_name or '',
+                wf.device_SN or '',
+                wf.userID or '',
+                wf.pilot or '',
+                wf.start_time.strftime('%Y-%m-%d %H:%M:%S') if wf.start_time else '',
+                wf.end_time.strftime('%Y-%m-%d %H:%M:%S') if wf.end_time else '',
+                wf.epoch.strftime('%Y-%m-%d %H:%M:%S') if wf.epoch else '',
+                wf.hr or '',
+                wf.spo2 or '',
+                wf.ABP.systolic if wf.ABP else '',
+                wf.ABP.diastolic if wf.ABP else '',
+                wf.skin_temperature or '',
+                wf.PPG.sampling_rate if wf.PPG else '',
+                wf.IMU.sampling_rate if wf.IMU else ''
+            ]
+            
+            # Determine max number of samples
+            ppg_count = len(wf.PPG.ir) if wf.PPG and wf.PPG.ir else 0
+            
+            # Flatten IMU values if nested
+            imu_samples = []
+            if wf.IMU and wf.IMU.values:
+                imu_samples = wf.IMU.values[0] if isinstance(wf.IMU.values[0], list) else wf.IMU.values
+            imu_count = len(imu_samples)
+            
+            max_samples = max(ppg_count, imu_count)
+            
+            # Write one row per sample index
+            for i in range(max_samples):
+                row = metadata + [i]  # Add sample index
+                
+                # Add PPG values
+                if wf.PPG and i < ppg_count:
+                    row.extend([
+                        wf.PPG.ir[i] if i < len(wf.PPG.ir) else '',
+                        wf.PPG.red[i] if i < len(wf.PPG.red) else '',
+                        wf.PPG.green[i] if i < len(wf.PPG.green) else ''
+                    ])
+                else:
+                    row.extend(['', '', ''])
+                
+                # Add IMU value
+                if i < imu_count:
+                    row.append(imu_samples[i])
+                else:
+                    row.append('')
+                
+                writer.writerow(row)
+    
+    print(f"\n✓ Exported {len(waveforms)} waveform(s) with all samples to: {csv_file}")
+
+
 def main() -> None:
     """
     Main function demonstrating proto file usage.
@@ -627,6 +726,7 @@ def main() -> None:
     # Identify candidate binary files for decryption
     preferred_candidates = []
     fallback_candidates = []
+    list_of_waveforms = []
     raw_files_found = 0
     meas_files_found = 0
 
@@ -684,13 +784,31 @@ def main() -> None:
         # 5. Deserialize back to objects
         print(f"\n{i}.3 Saving data")
         print_waveform_data(decoded_data)
-
+        wf = Waveform()
+        wf.set_metadata(
+            file_name=candidate_path.split('\\')[-1],
+            device_SN=device_SN,
+            userID=user_id,
+            start_time=start_datetime,
+            end_time=end_datetime
+        )
+        wf.extract_data(decoded_data)
+        
         # Finalize extraction process
         print(f"\nExtraction from file: {candidate_path.split('\\')[-1]} completed \n")
         i += 1
 
+        # Append the wf instance to a list
+        list_of_waveforms.append(wf)
+
+    # Export waveforms to CSV
+    if list_of_waveforms:
+        print(f"\nTotal waveforms extracted: {len(list_of_waveforms)}")
+        output_dir = Path(extraction_result['output_dir'])
+        export_waveforms_to_csv(list_of_waveforms, output_dir)
+        
     print(f"\n=== Extraction process completed ===\n")
-    a=0
+    
     
 if __name__ == "__main__":
     main()
