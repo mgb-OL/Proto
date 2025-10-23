@@ -84,7 +84,7 @@ ENCRYPTION_KEY_BYTES = _load_encryption_key()
 
 # LOAD THE PROTOBUF MODULE
 # Dynamically load the raw_data protobuf module
-spec = importlib.util.spec_from_file_location("raw_data_pb2", os.path.join(os.path.dirname(__file__), "raw_data_pb2.py"))
+spec = importlib.util.spec_from_file_location("raw_data_pb2", os.path.join(os.path.dirname(__file__), "src","raw_data_pb2.py"))
 # Load the raw_data protobuf module
 raw_data_pb2 = importlib.util.module_from_spec(spec)
 # Register the module in sys.modules
