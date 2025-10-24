@@ -1,15 +1,31 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from datetime import datetime, date, time
+from pathlib import Path
 import calendar
+try:
+    from PIL import Image, ImageTk
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
 
 
 class DataCollectionForm(tk.Tk):
-    def __init__(self):
+    def __init__(self, icon_path=None):
         super().__init__()
         self.title("Data Collection Form")
-        self.geometry("560x300")
+        self.geometry("500x280")
         self.resizable(False, False)
+        
+        # Set background color to match ONALABS logo (light cyan/blue)
+        bg_color = "#EEEEEE"  # Light cyan - adjust this color to match your logo
+        self.configure(bg=bg_color)
+        
+        # Set window icon if provided
+        self._set_icon(icon_path)
+        
+        # Center the window on screen
+        self._center_window()
 
         # State variables
         self.file_path = tk.StringVar()
@@ -24,6 +40,50 @@ class DataCollectionForm(tk.Tk):
         self._build_text_rows()
         self._build_datetime_rows()
         self._build_actions()
+        self._build_logo()
+    
+    def _center_window(self):
+        """Center the window on the screen."""
+        self.update_idletasks()  # Update window to get actual size
+        
+        # Get window dimensions
+        window_width = self.winfo_width()
+        window_height = self.winfo_height()
+        
+        # Get screen dimensions
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        
+        # Calculate position
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        
+        # Set window position
+        self.geometry(f"{window_width}x{window_height}+{x}+{y}")
+    
+    def _set_icon(self, icon_path):
+        """Set window icon from file path."""
+        if icon_path is None:
+            return
+        
+        try:
+            icon_file = Path(icon_path)
+            if not icon_file.exists():
+                print(f"Warning: Icon file not found: {icon_path}")
+                return
+            
+            # Check file extension
+            if icon_file.suffix.lower() == '.ico':
+                # Use iconbitmap for .ico files
+                self.iconbitmap(str(icon_file))
+            else:
+                # Use iconphoto for other image formats (.png, .gif, etc.)
+                icon_image = tk.PhotoImage(file=str(icon_file))
+                self.iconphoto(True, icon_image)
+                # Keep a reference to prevent garbage collection
+                self._icon_image = icon_image
+        except Exception as e:
+            print(f"Warning: Could not set icon: {e}")
 
     def _build_file_row(self):
         frm = ttk.Frame(self, padding=(12, 10, 12, 4))
@@ -41,7 +101,7 @@ class DataCollectionForm(tk.Tk):
         frm.grid(row=1, column=0, sticky="ew")
         frm.columnconfigure(1, weight=1)
 
-        ttk.Label(frm, text="Serial number:").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Label(frm, text="Device SN:").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
         ttk.Entry(frm, textvariable=self.serial_number).grid(row=0, column=1, sticky="ew", pady=4)
 
         ttk.Label(frm, text="User ID:").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
@@ -142,10 +202,99 @@ class DataCollectionForm(tk.Tk):
             pass
 
     def _build_actions(self):
-        frm = ttk.Frame(self, padding=(12, 0, 12, 12))
-        frm.grid(row=4, column=0, sticky="e")
-        ttk.Button(frm, text="Submit", command=self._on_submit).grid(row=0, column=0, padx=(0, 8))
-        ttk.Button(frm, text="Cancel", command=self._on_cancel).grid(row=0, column=1)
+        # Create a container frame that spans the full width
+        container = ttk.Frame(self, padding=(12, 0, 12, 12))
+        container.grid(row=4, column=0, sticky="ew")
+        container.columnconfigure(1, weight=1)  # Make middle column expandable
+        
+        # Logo on the left (column 0)
+        self._add_logo_to_frame(container, row=0, column=0)
+        
+        # Buttons on the right (column 2)
+        btn_frame = ttk.Frame(container)
+        btn_frame.grid(row=0, column=2, sticky="e")
+        ttk.Button(btn_frame, text="Submit", command=self._on_submit).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(btn_frame, text="Cancel", command=self._on_cancel).grid(row=0, column=1)
+    
+    def _add_logo_to_frame(self, parent_frame, row=0, column=0):
+        """Add ONALABS logo to the specified frame."""
+        try:
+            # Try to find the logo file (support various names and formats)
+            logo_candidates = [
+                "onalabs logo.jpg",
+                "ONALABS LOGO.jpg",
+                "onalabs logo.png",
+                "ONALABS LOGO.png",
+            ]
+            
+            logo_path = None
+            # Check in multiple locations
+            search_paths = [
+                Path("."),
+                Path("src/img"),
+                Path("./src/img"),
+                Path(__file__).parent / "img",
+                Path(__file__).parent.parent,
+                Path(__file__).parent.parent / "img",
+            ]
+            
+            for search_dir in search_paths:
+                for candidate in logo_candidates:
+                    candidate_path = search_dir / candidate
+                    if candidate_path.exists():
+                        logo_path = candidate_path
+                        break
+                if logo_path:
+                    break
+            
+            if not logo_path:
+                print("Warning: ONALABS logo file not found")
+                return
+            
+            # Load the image based on file type
+            if logo_path.suffix.lower() in ['.jpg', '.jpeg']:
+                # JPG requires PIL/Pillow
+                if not PIL_AVAILABLE:
+                    print("Warning: PIL/Pillow is required for JPG images. Install it with: pip install Pillow")
+                    return
+                
+                # Load with PIL and resize
+                pil_image = Image.open(logo_path)
+                max_height = 40
+                
+                # Calculate new dimensions maintaining aspect ratio
+                aspect_ratio = pil_image.width / pil_image.height
+                new_height = max_height
+                new_width = int(aspect_ratio * new_height)
+                
+                # Resize image
+                pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                logo_image = ImageTk.PhotoImage(pil_image)
+                
+            else:
+                # PNG/GIF can use tk.PhotoImage
+                logo_image = tk.PhotoImage(file=str(logo_path))
+                
+                # Resize if needed
+                max_height = 40
+                original_height = logo_image.height()
+                if original_height > max_height:
+                    scale_factor = original_height / max_height
+                    logo_image = logo_image.subsample(int(scale_factor), int(scale_factor))
+            
+            # Display logo
+            logo_label = tk.Label(parent_frame, image=logo_image, bg=self.cget('bg'))
+            logo_label.grid(row=row, column=column, sticky="w")
+            
+            # Keep reference to prevent garbage collection
+            self._logo_image = logo_image
+            
+        except Exception as e:
+            print(f"Warning: Could not load logo: {e}")
+    
+    def _build_logo(self):
+        """Legacy method - logo is now built in _build_actions."""
+        pass
 
     def _browse_file(self):
         path = filedialog.askopenfilename(title="Choose a file")
@@ -211,24 +360,27 @@ class DataCollectionForm(tk.Tk):
             raise ValueError("Please enter a valid date (YYYY-MM-DD).")
     
     @staticmethod
-    def show_form():
+    def show_form(icon_path=None):
         """
         Show the form and return collected data.
+        
+        Arguments:
+            icon_path: Optional path to icon file (.ico, .png, .gif, etc.)
         
         Returns:
             dict or None: Dictionary with form data if submitted, None if canceled.
                 Keys: 'file_path', 'serial_number', 'user_id', 'start_datetime', 'end_datetime'
         """
-        app = DataCollectionForm()
+        app = DataCollectionForm(icon_path=icon_path)
         app.mainloop()
         return app.result
 
 
 if __name__ == "__main__":
-    result = DataCollectionForm.show_form()
+    result = DataCollectionForm.show_form(icon_path='src/img/Icon ONALABS.ico')
     if result:
         print("Form submitted with:")
         for key, value in result.items():
             print(f"  {key}: {value}")
     else:
-        print("Form canceled")
+        print("Form canceled.")

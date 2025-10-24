@@ -10,7 +10,8 @@ pycryptodome>=3.20.0
 # File system operations
 littlefs-python>=0.12.0
 
-# Development dependencies
+# GUI dependencies
+Pillow>=10.0.0  # For image handling (JPG, PNG, etc.)
 pytest>=7.0.0
 pytest-cov>=4.0.0
 

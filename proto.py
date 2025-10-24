@@ -5,14 +5,11 @@ Example of how to read and use Protocol Buffer data.
 
 # Import the generated protobuf classes
 import importlib.util, sys, os, struct
-import tkinter as tk
-from tkinter import filedialog
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Sequence, Tuple
 from Crypto.Cipher import AES
 from google.protobuf.message import DecodeError
 from littlefs import LittleFS, LittleFSError, UserContext
-from datetime import datetime
 import csv
 
 # Import the form GUI
