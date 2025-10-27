@@ -27,6 +27,7 @@ os.environ.setdefault("PROTO_ENCRYPTION_KEY_FILE", "keys/OEM_KEY_COMPANY1_key_AE
 def _load_encryption_key() -> bytes:
     """
     Load AES key from env variables or fall back to OEM key.
+    Priority: 1) PROTO_ENCRYPTION_KEY (hex), 2) Key file
     
     Arguments:
         None
@@ -34,20 +35,22 @@ def _load_encryption_key() -> bytes:
     Returns:
         bytes: The AES key (16, 24, or 32 bytes for AES-128/192/256).
     """
-    # Try to load key directly from environment variable
-    raw_key = os.environ.get("PROTO_ENCRYPTION_KEY")
+    # FIRST OPTION: Try to load key from environment variable (hex format)
+    hex_key = os.environ.get("PROTO_ENCRYPTION_KEY")
     
-    # If key provided directly, use it if valid length
-    if raw_key:
-        # Get bytes 
-        candidate = raw_key.encode("utf-8")
-        # Check length
-        if len(candidate) in {16, 24, 32}:
-            # Valid key length
-            return candidate
-
+    if hex_key:
+        try:
+            # Convert hex string to bytes
+            key_bytes = bytes.fromhex(hex_key)
+            # Check if valid AES key length
+            if len(key_bytes) in {16, 24, 32}:
+                return key_bytes
+            else:
+                print(f"Warning: PROTO_ENCRYPTION_KEY has invalid length {len(key_bytes)} bytes. Expected 16, 24, or 32.")
+        except ValueError:
+            print("Warning: PROTO_ENCRYPTION_KEY is not a valid hex string.")
     
-    # Try to load key from file if specified
+    # SECOND OPTION: Try to load key from file
     key_file_path = os.environ.get("PROTO_ENCRYPTION_KEY_FILE")
     
     # If there is a file path, try to read it
@@ -77,7 +80,7 @@ def _load_encryption_key() -> bytes:
                 return file_bytes
 
     raise RuntimeError(
-        "Unable to load AES key. Set PROTO_ENCRYPTION_KEY or PROTO_ENCRYPTION_KEY_FILE to a valid 16/24/32-byte key."
+        "Unable to load AES key. Set PROTO_ENCRYPTION_KEY (hex) or PROTO_ENCRYPTION_KEY_FILE to a valid 16/24/32-byte key."
     )
 
 # LOAD THE ENCRYPTION KEY
@@ -692,8 +695,8 @@ def main() -> None:
     i = 1
     
     # 1. Show form to collect all required data
-    print(f"\n{i}. Launching data collection form...")
-    i += 1
+    print(f"\n==== Launching data collection form... ====")
+   
     
     # Show the form and collect user input
     form_data = DataCollectionForm.show_form()
@@ -747,9 +750,9 @@ def main() -> None:
                 fallback_candidates.append(entry)
     
     # Print extraction summary
-    print(f"\n{i}. Extracted {len(extracted_files)} file(s) from binary image into {extraction_result['output_dir']}")
+    print(f"\n====  Extracted {len(extracted_files)} file(s) from binary image into {extraction_result['output_dir']} ====")
     print(f"\nFound {raw_files_found} raw file(s) and {meas_files_found} meas file(s) during extraction.")
-    i += 1
+    
     
     # Combine preferred and fallback candidates
     candidates = preferred_candidates + fallback_candidates
