@@ -580,7 +580,7 @@ def test_littlefs_extraction(
     return result
 
 
-def export_waveforms_to_csv(waveforms: List[Any], output_path: Path) -> None:
+def export_waveforms_to_csv(waveforms: List[Any], output_path: Path, file_name: str) -> None:
     """
     Export all waveform data to a single comprehensive CSV file.
     Each row contains metadata plus one sample from PPG and IMU data.
@@ -588,6 +588,7 @@ def export_waveforms_to_csv(waveforms: List[Any], output_path: Path) -> None:
     Arguments:
         waveforms: List of Waveform objects
         output_path: Path where the CSV file will be saved
+        file_name: Name of the output CSV file
     """
     if not waveforms:
         print("No waveforms to export.")
@@ -615,9 +616,9 @@ def export_waveforms_to_csv(waveforms: List[Any], output_path: Path) -> None:
         'PPG Green',
         'IMU Acceleration Norm'
     ]
-    
-    csv_file = output_path / 'waveforms_complete.csv'
-    
+
+    csv_file = output_path / file_name
+
     with open(csv_file, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         writer.writerow(headers)
@@ -802,8 +803,9 @@ def main() -> None:
     if list_of_waveforms:
         print(f"\nTotal waveforms extracted: {len(list_of_waveforms)}")
         output_dir = Path(extraction_result['output_dir'])
-        export_waveforms_to_csv(list_of_waveforms, output_dir)
-        
+        file_name = f"DeviceSN_{device_SN}_UserID_{user_id}_From_{start_datetime.strftime('%Y%m%d_%H%M')}_To_{end_datetime.strftime('%Y%m%d_%H%M')}.csv"
+        export_waveforms_to_csv(list_of_waveforms, output_dir.parent, file_name)
+
     print(f"\n=== Extraction process completed ===\n")
     
     
